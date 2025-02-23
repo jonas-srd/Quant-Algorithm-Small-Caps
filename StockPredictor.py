@@ -21,7 +21,7 @@ class StockPredictor:
 
     def fetch_stock_data(self, ticker):
         try:
-            df = yf.download(ticker, period="1y", interval="1d")
+            df = yf.download(ticker, period="10y", interval="1d")
 
             if df.empty:
                 print(f"⚠ Skipping {ticker}: No data available.")
@@ -101,7 +101,7 @@ class StockPredictor:
         print(f"✅ Durchschnittliche Cross-Validation-Genauigkeit: {np.mean(cv_scores) * 100:.2f}%")
 
         # ✅ Modell speichern
-        joblib.dump(self.model, "trained_model.pkl")
+        joblib.dump((self.model, self.data, self.X_test, self.y_test), "trained_model.pkl")
         print("✅ Modell gespeichert als 'trained_model.pkl'")
 
     def evaluate_model(self):
@@ -135,8 +135,8 @@ class StockPredictor:
             self.train_model()
         else:
             print("✅ Lade gespeichertes Modell...")
-            self.model = joblib.load("trained_model.pkl")
-            print("✅ Modell geladen!")
+            self.model, self.data, self.X_test, self.y_test = joblib.load("trained_model.pkl")
+            print("✅ Modell und Daten geladen!")
 
     def run(self, force_train=False):
         self.load_model(force_train=force_train)
