@@ -1,9 +1,13 @@
 import yfinance as yf
 import numpy as np
 import xgboost as xgb
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.metrics import accuracy_score, f1_score, classification_report
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
 import pdb
+import joblib
+import os
 
 
 class StockPredictor:
@@ -18,7 +22,7 @@ class StockPredictor:
     def fetch_stock_data(self, ticker):
         try:
             df = yf.download(ticker, period="1y", interval="1d")
-            pdb.set_trace()
+
             if df.empty:
                 print(f"⚠ Skipping {ticker}: No data available.")
                 return None
@@ -69,13 +73,21 @@ class StockPredictor:
     def train_model(self):
         X, y = self.prepare_data()
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        self.X_test = X_test  # Store for later evaluation
+        self.y_test = y_test  # Store for later evaluation
         param_grid = {
             "n_estimators": [1000],
             "max_depth": [9],
             "learning_rate": [0.1],
             "subsample": [1.0],
-            "colsample_bytree": [0.75]
+            "colsample_bytree": [0.75],
+            "gamma": [0],
+            "min_child_weight": [1],
+            "reg_lambda": [1],
+            "reg_alpha": [0]
         }
+
         grid_search = GridSearchCV(xgb.XGBClassifier(random_state=42), param_grid, cv=5, scoring="accuracy", n_jobs=-1,
                                    verbose=2)
         print("🔍 Starte Grid Search...")
@@ -83,18 +95,49 @@ class StockPredictor:
         self.model = grid_search.best_estimator_
         print(f"🎯 Beste Hyperparameter: {grid_search.best_params_}")
 
+        # Cross-Validation Score Berechnung
+        cv_scores = cross_val_score(self.model, X_train, y_train, cv=5, scoring="accuracy")
+        print(f"✅ Cross-Validation Scores: {cv_scores}")
+        print(f"✅ Durchschnittliche Cross-Validation-Genauigkeit: {np.mean(cv_scores) * 100:.2f}%")
+
+        # ✅ Modell speichern
+        joblib.dump(self.model, "trained_model.pkl")
+        print("✅ Modell gespeichert als 'trained_model.pkl'")
+
     def evaluate_model(self):
-        X, y = self.prepare_data()
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        y_pred = self.model.predict(X_test)
-        print(f"✅ Modellgenauigkeit: {accuracy_score(y_test, y_pred) * 100:.2f}%")
-        print(f"F1 Score: {f1_score(y_test, y_pred):.4f}")
+        y_pred = self.model.predict(self.X_test)  # Use stored test set
+        print(f"✅ Test-Accuracy: {accuracy_score(self.y_test, y_pred) * 100:.2f}%")
+        print(f"F1 Score: {f1_score(self.y_test, y_pred):.4f}")
         print("Classification Report:")
-        print(classification_report(y_test, y_pred))
+        print(classification_report(self.y_test, y_pred))
 
-    def run(self):
-        self.train_model()
+        # Confusion Matrix Visualization
+        cm = confusion_matrix(self.y_test, y_pred)
+        plt.figure(figsize=(6,5))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=["Down", "Up"], yticklabels=["Down", "Up"])
+        plt.xlabel("Predicted")
+        plt.ylabel("Actual")
+        plt.title("Confusion Matrix")
+        plt.show()
+
+        # Feature Importance Plot
+        feature_importance = self.model.feature_importances_
+        plt.figure(figsize=(8,6))
+        plt.barh(["Close", "Moving_Avg", "Upper_Band", "Lower_Band", "MACD", "MACD_Signal", "RSI", "ATR", "Bollinger_Width", "ROC", "ADX"], feature_importance)
+        plt.xlabel("Feature Importance")
+        plt.ylabel("Features")
+        plt.title("Feature Importance Plot")
+        plt.show()
+
+    def load_model(self, force_train=False):
+        if force_train or not os.path.exists("trained_model.pkl"):
+            print("🔄 Training eines neuen Modells wird gestartet...")
+            self.train_model()
+        else:
+            print("✅ Lade gespeichertes Modell...")
+            self.model = joblib.load("trained_model.pkl")
+            print("✅ Modell geladen!")
+
+    def run(self, force_train=False):
+        self.load_model(force_train=force_train)
         self.evaluate_model()
-
-
-

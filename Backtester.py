@@ -61,7 +61,7 @@ class Backtester:
                     fee = buyback_amount * self.trading_fee
                     balance -= buyback_amount + fee
                     short_position = 0.0
-            print(balance)
+            #print(balance)
 
         final_balance = balance
         roi = ((final_balance - initial_balance) / initial_balance) * 100

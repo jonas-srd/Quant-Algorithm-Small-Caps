@@ -12,11 +12,18 @@ small_caps = [
 
 
 
+
 # ✅ Modell ausführen
 predictor = StockPredictor(tickers=small_caps)
-predictor.run()
+predictor.run(force_train = False)
 
-# ✅ Backtest starten
-if "BB" in predictor.data:
-    backtester = Backtester(model=predictor.model)
-    backtester.backtest(predictor.data["BB"])
+# ✅ Backtest mit verschiedenen Aktien durchführen
+for stock in [    "GME", "AMC", "PLTR", "SOFI", "MARA", "RIOT", "NOK", "SNDL",
+    "FUBO", "FIZZ", "CARA", "CLNE", "CRON", "NNDM", "SKLZ", "OSTK",
+    "SPCE", "MULN", "BB", "CLOV", "DKNG", "ACB", "PINS", "CSSE",
+    "WKHS", "IINN", "VYNE", "HCMC", "INND", "ZOM", "VYGR", "ONVO",
+    "DGLY", "KOS", "BNTX", "BYSI", "GSAT", "SCSC", "DCBO", "MTC", "DLO"]:
+    if stock in predictor.data:
+        print(f"🔍 Backtest für {stock} startet...")
+        backtester = Backtester(model=predictor.model)
+        backtester.backtest(predictor.data[stock])
