@@ -138,6 +138,11 @@ class StockPredictor:
             self.model, self.data, self.X_test, self.y_test = joblib.load("trained_model.pkl")
             print("✅ Modell und Daten geladen!")
 
+    def predict(self, X):
+        if self.model is None:
+            raise ValueError("⚠ The model has not been trained or loaded yet!")
+        return self.model.predict(X)
+
     def run(self, force_train=False):
         self.load_model(force_train=force_train)
         self.evaluate_model()
