@@ -4,7 +4,7 @@ from StockPredictor import StockPredictor
 import pdb
 
 class Backtester:
-    def __init__(self, model, future_prediction_days=5, trading_fee=0.00, risk_per_trade=0.1, stop_loss=0.01, take_profit=0.04):
+    def __init__(self, model, future_prediction_days=5, trading_fee=0.005, risk_per_trade=0.1, stop_loss=0.01, take_profit=0.04):
         self.model = model
         self.future_prediction_days = future_prediction_days
         self.trading_fee = trading_fee
@@ -18,8 +18,6 @@ class Backtester:
         balance = initial_balance
         position = 0.0
         short_position = 0.0
-        last_trade_day = -3  # Damit direkt ein Kauf am ersten Tag möglich ist
-        trade_interval = 3  # Nur alle 3 Tage traden
         trade_count = 0
         daily_returns = []
 
@@ -43,13 +41,12 @@ class Backtester:
                 continue
 
             # **Trade-Öffnung nur wenn keine offene Position existiert**
-            if position == 0 and short_position == 0 and i - last_trade_day >= trade_interval:
+            if position == 0 and short_position == 0:
                 if prediction == 1:  # Long
                     invest_amount = balance * self.risk_per_trade
                     balance -= invest_amount
                     position = invest_amount / trade_price
                     long_entry_price = trade_price  # Store entry price
-                    last_trade_day = i
                     trade_count += 1
                     self.trade_log.append({
                         "Day": i,
@@ -64,7 +61,6 @@ class Backtester:
                     balance -= invest_amount
                     short_position = invest_amount / trade_price
                     short_entry_price = trade_price  # Store entry price
-                    last_trade_day = i
                     trade_count += 1
                     self.trade_log.append({
                         "Day": i,
