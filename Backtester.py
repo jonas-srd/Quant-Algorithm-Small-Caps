@@ -80,55 +80,80 @@ class Backtester:
             except ValueError:
                 continue
 
+
             if position == 0 and short_position == 0:
-                if prediction == 1:
+                if prediction == 1:  # Long
                     invest_amount = balance * self.risk_per_trade
                     balance -= invest_amount
                     position = invest_amount / trade_price
-                    long_entry_price = trade_price
+                    long_entry_price = trade_price  # Store entry price
                     trade_count += 1
-                    self.trade_log.append(
-                        {"Day": i, "Trade Type": "Long Open", "Trade Price": trade_price, "Investment": invest_amount,
-                         "Balance": balance})
-                elif prediction == 0:
+                    self.trade_log.append({
+                        "Day": i,
+                        "Trade Type": "Long Open",
+                        "Trade Price": trade_price,
+                        "Investment": invest_amount,
+                        "Balance": balance
+                    })
+
+                elif prediction == 0:  # Short
                     invest_amount = balance * self.risk_per_trade
                     balance -= invest_amount
                     short_position = invest_amount / trade_price
-                    short_entry_price = trade_price
+                    short_entry_price = trade_price  # Store entry price
+                    last_trade_day = i
                     trade_count += 1
-                    self.trade_log.append(
-                        {"Day": i, "Trade Type": "Short Open", "Trade Price": trade_price, "Investment": invest_amount,
-                         "Balance": balance})
+                    self.trade_log.append({
+                        "Day": i,
+                        "Trade Type": "Short Open",
+                        "Trade Price": trade_price,
+                        "Investment": invest_amount,
+                        "Balance": balance
+                    })
 
+            # **Position schließen (Take Profit oder Stop Loss)**
             if position > 0.0:
-                if (max_price / long_entry_price - 1 >= self.take_profit) or (
-                        1 - min_price / long_entry_price >= self.stop_loss):
-                    exit_price = long_entry_price * (1 + self.take_profit) if (
-                                max_price / long_entry_price - 1 >= self.take_profit) else long_entry_price * (
-                                1 - self.stop_loss)
-                    balance += position * exit_price - (position * exit_price * self.trading_fee)
-                    position = 0.0
-                    self.trade_log.append(
-                        {"Day": i, "Trade Type": "Long Close", "Trade Price": exit_price, "Investment": 0.0,
-                         "Balance": balance})
+                if (max_price / long_entry_price - 1 >= self.take_profit) or \
+                        (1 - min_price / long_entry_price >= self.stop_loss):
+                    exit_price = (1 + self.take_profit) * long_entry_price if (
+                                max_price / long_entry_price - 1 >= self.take_profit) else ( 1 - self.stop_loss) * long_entry_price
+                    sell_amount = position * exit_price
+                    fee = sell_amount * self.trading_fee
+                    balance += sell_amount - fee
+                    position = 0.0  # Close position
+
+                    self.trade_log.append({
+                        "Day": i,
+                        "Trade Type": "Long Close",
+                        "Trade Price": exit_price,  # Corrected to actual exit price
+                        "Investment": 0.0,
+                        "Balance": balance
+                    })
 
             if short_position > 0.0:
-                if (short_entry_price / min_price - 1 >= self.take_profit) or (
-                        1 - short_entry_price / max_price >= self.stop_loss):
-                    exit_price = short_entry_price * (1 - self.take_profit) if (
-                                short_entry_price / min_price - 1 >= self.take_profit) else short_entry_price * (
-                                1 + self.stop_loss)
-                    balance += short_position * exit_price - (short_position * exit_price * self.trading_fee)
-                    short_position = 0.0
-                    self.trade_log.append(
-                        {"Day": i, "Trade Type": "Short Close", "Trade Price": exit_price, "Investment": 0.0,
-                         "Balance": balance})
+                if (short_entry_price / min_price - 1 >= self.take_profit) or \
+                        (1 - short_entry_price / max_price >= self.stop_loss):
+                    exit_price = (1 + self.take_profit) * short_entry_price if (
+                                short_entry_price / min_price - 1 >= self.take_profit) else (1 - self.stop_loss) * short_entry_price
+                    profit_loss = exit_price * short_position
+                    fee = abs(profit_loss) * self.trading_fee  # Ensure fees are subtracted correctly
+                    balance += profit_loss - fee
+                    short_position = 0.0  # Close position
+
+                    self.trade_log.append({
+                        "Day": i,
+                        "Trade Type": "Short Close",
+                        "Trade Price": exit_price,  # Corrected to actual exit price
+                        "Investment": 0.0,
+                        "Balance": balance
+                    })
 
             daily_return = (balance - initial_balance) / initial_balance
             daily_returns.append(daily_return)
 
         final_balance = balance
         roi = ((final_balance - initial_balance) / initial_balance) * 100
+
 
         print(f"\n🔹 Backtest complete!")
         print(f"📊 Number of trades: {trade_count}")
@@ -139,3 +164,33 @@ class Backtester:
         trade_df = pd.DataFrame(self.trade_log)
         trade_df.to_csv("backtest_results.csv", index=False)
         print("✅ Backtest results saved as 'backtest_results.csv'")
+
+    def print_prediction_accuracy(self, df):
+        """Berechnet und gibt die Trefferquote der Vorhersagen basierend auf den Trades aus."""
+        correct_predictions = 0
+        total_predictions = 0
+
+        for trade in self.trade_log:
+            if "Trade Type" in trade and trade["Trade Type"] in ["Long Open", "Short Open"]:
+                total_predictions += 1
+                actual_movement = 1 if trade["Trade Type"] == "Long Open" else 0
+
+                trade_day = trade["Day"]
+                trade_price = trade["Trade Price"]
+
+                try:
+                    # Hole den zukünftigen Schlusskurs nach der festgelegten `future_prediction_days`
+                    future_close = df.iloc[trade_day + self.future_prediction_days]["Close"]
+
+                    # Bestimme, ob der Preis gestiegen oder gefallen ist
+                    predicted_movement = 1 if future_close.item() > trade_price else 0
+
+                    if actual_movement == predicted_movement:
+                        correct_predictions += 1
+                except IndexError:
+                    continue  # Falls es nicht genug zukünftige Daten gibt, überspringen
+
+        accuracy = (correct_predictions / total_predictions) * 100 if total_predictions > 0 else 0
+        print(f"\n🎯 Prediction Accuracy: {accuracy:.2f}% ({correct_predictions}/{total_predictions} correct)")
+
+

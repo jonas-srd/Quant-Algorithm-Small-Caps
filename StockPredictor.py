@@ -21,7 +21,7 @@ class StockPredictor:
 
     def fetch_stock_data(self, ticker):
         try:
-            df = yf.download(ticker, period="10y", interval="1h")
+            df = yf.download(ticker, period="10y", interval="1d")
 
             if df.empty:
                 print(f"⚠ Skipping {ticker}: No data available.")
