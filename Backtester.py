@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from StockPredictor import StockPredictor
+import pdb
 
 class Backtester:
     def __init__(self, model, future_prediction_days=5, trading_fee=0.00, risk_per_trade=0.1, stop_loss=0.01, take_profit=0.04):
@@ -12,35 +13,17 @@ class Backtester:
         self.take_profit = take_profit
         self.trade_log = []
 
-    def calculate_risk_metrics(self, returns, risk_free_rate=0.02):
-        returns = np.array(returns)
-        mean_return = np.mean(returns)
-        std_dev = np.std(returns)
-        downside_std = np.std(returns[returns < 0]) if len(returns[returns < 0]) > 0 else 1
-        max_drawdown = np.max(np.maximum.accumulate(returns) - returns) if len(returns) > 0 else 0
-        annualized_return = np.mean(returns) * 252
-
-        sharpe_ratio = (annualized_return - risk_free_rate) / (std_dev * np.sqrt(252)) if std_dev > 0 else np.nan
-        sortino_ratio = (annualized_return - risk_free_rate) / (downside_std * np.sqrt(252)) if downside_std > 0 else np.nan
-        calmar_ratio = annualized_return / max_drawdown if max_drawdown > 0 else np.nan
-
-        return {
-            "Sharpe Ratio": sharpe_ratio,
-            "Sortino Ratio": sortino_ratio,
-            "Max Drawdown": max_drawdown,
-            "Calmar Ratio": calmar_ratio,
-            "Volatilität": std_dev * np.sqrt(252)
-        }
-
     def backtest(self, df):
         initial_balance = 10_000
         balance = initial_balance
         position = 0.0
         short_position = 0.0
-        last_buy_day = -3  # Damit direkt ein Kauf am ersten Tag möglich ist
-        trade_interval = 3  # Nur alle 3 Tage kaufen
+        last_trade_day = -3  # Damit direkt ein Kauf am ersten Tag möglich ist
+        trade_interval = 3  # Nur alle 3 Tage traden
         trade_count = 0
         daily_returns = []
+
+        print(f"🔍 Backtest gestartet mit Startkapital: ${initial_balance}")
 
         for i in range(len(df) - self.future_prediction_days):
             features = np.array(df.iloc[i][["Close", "Moving_Avg", "Upper_Band", "Lower_Band",
@@ -59,60 +42,87 @@ class Backtester:
             except ValueError:
                 continue
 
-            # Kauf (nur alle 3 Tage erlaubt)
-            if i - last_buy_day >= trade_interval:
+            # **Trade-Öffnung nur wenn keine offene Position existiert**
+            if position == 0 and short_position == 0 and i - last_trade_day >= trade_interval:
                 if prediction == 1:  # Long
                     invest_amount = balance * self.risk_per_trade
                     balance -= invest_amount
                     position = invest_amount / trade_price
-                    last_buy_day = i  # Letzten Kauf-Tag speichern
+                    long_entry_price = trade_price  # Store entry price
+                    last_trade_day = i
                     trade_count += 1
+                    self.trade_log.append({
+                        "Day": i,
+                        "Trade Type": "Long Open",
+                        "Trade Price": trade_price,
+                        "Investment": invest_amount,
+                        "Balance": balance
+                    })
+
                 elif prediction == 0:  # Short
                     invest_amount = balance * self.risk_per_trade
-                    balance += invest_amount
+                    balance -= invest_amount
                     short_position = invest_amount / trade_price
-                    last_buy_day = i  # Letzten Kauf-Tag speichern
+                    short_entry_price = trade_price  # Store entry price
+                    last_trade_day = i
                     trade_count += 1
+                    self.trade_log.append({
+                        "Day": i,
+                        "Trade Type": "Short Open",
+                        "Trade Price": trade_price,
+                        "Investment": invest_amount,
+                        "Balance": balance
+                    })
 
-            # Verkauf (jederzeit erlaubt)
+            # **Position schließen (Take Profit oder Stop Loss)**
             if position > 0.0:
-                if ((max_price - trade_price) / trade_price >= self.take_profit or
-                    (trade_price - min_price) / trade_price >= self.stop_loss):
-                    sell_amount = position * trade_price
+                if (max_price / long_entry_price - 1 >= self.take_profit) or \
+                        (1 - min_price / long_entry_price >= self.stop_loss):
+                    exit_price = (1 + self.take_profit) * long_entry_price if (max_price / long_entry_price - 1 >= self.take_profit) else (1 - self.stop_loss)*long_entry_price
+                    sell_amount = position * exit_price
                     fee = sell_amount * self.trading_fee
                     balance += sell_amount - fee
-                    position = 0.0
+                    position = 0.0  # Close position
+
+                    self.trade_log.append({
+                        "Day": i,
+                        "Trade Type": "Long Close",
+                        "Trade Price": exit_price,  # Corrected to actual exit price
+                        "Investment": 0.0,
+                        "Balance": balance
+                    })
 
             if short_position > 0.0:
-                if ((trade_price - min_price) / trade_price >= self.take_profit or
-                    (max_price - trade_price) / trade_price >= self.stop_loss):
-                    buyback_amount = short_position * trade_price
-                    fee = buyback_amount * self.trading_fee
-                    balance -= buyback_amount + fee
-                    short_position = 0.0
+                if (short_entry_price / min_price - 1 >= self.take_profit) or \
+                        (1 - short_entry_price / max_price >= self.stop_loss):
+                    exit_price = (1 + self.take_profit) * short_entry_price if (short_entry_price / min_price - 1 >= self.take_profit) else (1 - self.stop_loss)*short_entry_price
+                    profit_loss = exit_price * short_position
+                    fee = abs(profit_loss) * self.trading_fee  # Ensure fees are subtracted correctly
+                    balance += profit_loss - fee
+                    short_position = 0.0  # Close position
+
+                    self.trade_log.append({
+                        "Day": i,
+                        "Trade Type": "Short Close",
+                        "Trade Price": exit_price,  # Corrected to actual exit price
+                        "Investment": 0.0,
+                        "Balance": balance
+                    })
 
             daily_return = (balance - initial_balance) / initial_balance
             daily_returns.append(daily_return)
 
-            self.trade_log.append({
-                "Day": i,
-                "Balance": balance,
-                "Trade Type": "Long" if prediction == 1 else "Short",
-                "Trade Price": trade_price
-            })
-
         final_balance = balance
         roi = ((final_balance - initial_balance) / initial_balance) * 100
-        risk_metrics = self.calculate_risk_metrics(daily_returns)
 
-        print(f"🔹 Backtest abgeschlossen!")
+        print(f"\n🔹 Backtest abgeschlossen!")
         print(f"📊 Anzahl der Trades: {trade_count}")
         print(f"💰 Startkapital: ${initial_balance:,.2f}")
         print(f"🏁 Endkapital: ${final_balance:,.2f}")
         print(f"📈 Gesamtrendite: {roi:.2f}%")
-        print(f"📉 Risikokennzahlen:")
-        for metric, value in risk_metrics.items():
-            print(f"   {metric}: {value:.4f}")
 
-        pd.DataFrame(self.trade_log).to_csv("backtest_results.csv", index=False)
+        # Speichern der Trades in CSV-Datei
+        trade_df = pd.DataFrame(self.trade_log)
+        trade_df.to_csv("backtest_results.csv", index=False)
+
         print("✅ Backtest-Ergebnisse gespeichert als 'backtest_results.csv'")
