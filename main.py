@@ -20,9 +20,6 @@ small_caps = [
 
 
 
-
-
-
 # ✅ Modell ausführen
 # ✅ Initialize Stock Predictor and Train/Load Model
 predictor = StockPredictor(tickers=small_caps)
@@ -31,17 +28,22 @@ predictor.run(force_train=False)
 # ✅ Pass only the trained model to Backtester
 backtester = Backtester(model=predictor.model)
 
+# ✅ Select stocks and run backtest
+tickers = filtered_tickers = [
+    "GME", "AMC", "PLTR", "SOFI", "MARA", "RIOT", "NOK", "SNDL",
+    "FUBO", "FIZZ", "CARA", "CLNE", "CRON", "NNDM", "SKLZ",
+    "MULN", "BB", "CLOV", "DKNG", "ACB", "PINS", "CSSE", "WKHS",
+    "IINN", "VYNE", "INND", "ZOM", "VYGR", "ONVO", "DGLY", "KOS",
+    "BNTX", "BYSI", "GSAT", "SCSC", "DCBO",  "DLO", "LITE",
+    "QLYS", "SHAK", "POWI", "PI", "POWL", "CIEN", "CRDO",
+    "AHCO", "AG", "SMR", "OXLC", "HIMS", "LRE", "NXT",
+     "RIO", "CASH", "GAM", "SOL", "UBS", "TCRT", "NAYA",
+    "OLB", "SBET", "AQB", "SHPH", "ENVB", "AZTR", "PALI", "UOKA",
+    "YCBD", "VTAK",  "ATXI"
+]
 
-stock = "OLB"
 start_date = "2023-01-01"
+end_date = "2024-01-01"
 
-if not start_date:
-    end_date = datetime.today() - timedelta(days=365 * 5)
-    random_days = random.randint(0, 365 * 4)
-    start_date = (end_date + timedelta(days=random_days)).strftime('%Y-%m-%d')
-
-end_date = (datetime.strptime(start_date, '%Y-%m-%d') + timedelta(days=365)).strftime('%Y-%m-%d')
-df = backtester.fetch_stock_data(stock, start_date, end_date)
-backtester.backtest(df)
-backtester.print_prediction_accuracy(df)
+backtester.run_backtest(tickers, start_date, end_date)
 
