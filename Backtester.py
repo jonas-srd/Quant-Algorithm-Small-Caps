@@ -7,7 +7,7 @@ import pdb
 
 class Backtester:
     def __init__(self, model, future_prediction_days=5, trading_fee=0.005, risk_per_trade=0.1, stop_loss=0.01,
-                 take_profit=0.04, lookback_period=10, std_dev_factor=2, min_prob_threshold=0.7):
+                 take_profit=0.04, lookback_period=10, std_dev_factor=2, min_prob_threshold=0.9):
         self.model = model
         self.future_prediction_days = future_prediction_days
         self.trading_fee = trading_fee
@@ -181,8 +181,13 @@ class Backtester:
                 # Only count if there's a valid actual movement to compare
                 if actual_movement is not None and actual_movement == predicted_movement:
                     self.correct_predictions += 1
+                trade_start_date = stock_data[trade_stock].index[i].strftime("%Y-%m-%d")  # Date of trade entry
+                trade_end_date = stock_data[trade_stock].index[i + self.future_prediction_days].strftime(
+                    "%Y-%m-%d")  # Exit date
 
                 self.trade_log.append({
+                    "Trade Start Date": trade_start_date,
+                    "Trade End Date": trade_end_date,
                     "Day": i,
                     "Stock": trade_stock,
                     "Trade Type": trade_outcome,

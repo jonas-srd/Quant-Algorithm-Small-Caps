@@ -1,45 +1,34 @@
 from StockPredictor import StockPredictor
 from Backtester import Backtester
+from TFTRL import StockPredictor_TFT
 from datetime import datetime, timedelta
 import random
 import pdb
 
+
+
+
 small_caps = [
-    "GME", "AMC", "PLTR", "SOFI", "MARA", "RIOT", "NOK", "SNDL",
-    "FUBO", "FIZZ", "CARA", "CLNE", "CRON", "NNDM", "SKLZ", "OSTK",
-    "MULN", "BB", "CLOV", "DKNG", "ACB", "PINS", "CSSE", "WKHS",
-    "IINN", "VYNE", "INND", "ZOM", "VYGR", "ONVO", "DGLY", "KOS",
-    "BNTX", "BYSI", "GSAT", "SCSC", "DCBO", "MTC", "DLO", "LITE",
-    "QLYS", "BOX", "SHAK", "POWI", "PI", "POWL", "CIEN", "CRDO",
-    "AHCO", "AG", "SMR", "OXLC", "HIMS", "LRE", "MCM", "MDF", "NEA",
-    "NXT", "OLE", "PRS", "RIO", "CASH", "DOM", "GAM", "NTH", "ORY",
-    "SOL", "UBS", "TRG", "TCRT", "NAYA", "OLB", "SBET", "AQB",
-    "SHPH", "ENVB", "AZTR", "PALI", "UOKA", "YCBD", "VTAK", "PCSA",
-    "ATXI"
+    "GME", "AMC", "PLTR"
 ]
 
 
 
 # ✅ Modell ausführen
 # ✅ Initialize Stock Predictor and Train/Load Model
-predictor = StockPredictor(tickers=small_caps)
-predictor.run(force_train=False)
+#predictor = StockPredictor(tickers=small_caps)
+#predictor.run(force_train=False)
 
+predictor = StockPredictor_TFT(tickers=small_caps)
+predictor.run(force_train=False)
+pdb.set_trace()
 # ✅ Pass only the trained model to Backtester
 backtester = Backtester(model=predictor.model)
 
 # ✅ Select stocks and run backtest
-tickers = filtered_tickers = [
-    "GME", "AMC", "PLTR", "SOFI", "MARA", "RIOT", "NOK", "SNDL",
-    "FUBO", "FIZZ", "CARA", "CLNE", "CRON", "NNDM", "SKLZ",
-    "MULN", "BB", "CLOV", "DKNG", "ACB", "PINS", "CSSE", "WKHS",
-    "IINN", "VYNE", "INND", "ZOM", "VYGR", "ONVO", "DGLY", "KOS",
-    "BNTX", "BYSI", "GSAT", "SCSC", "DCBO",  "DLO", "LITE",
-    "QLYS", "SHAK", "POWI", "PI", "POWL", "CIEN", "CRDO",
-    "AHCO", "AG", "SMR", "OXLC", "HIMS", "LRE", "NXT",
-     "RIO", "CASH", "GAM", "SOL", "UBS", "TCRT", "NAYA",
-    "OLB", "SBET", "AQB", "SHPH", "ENVB", "AZTR", "PALI", "UOKA",
-    "YCBD", "VTAK",  "ATXI"
+tickers = filtered_tickers = ["KOPN", "EYPT", "INBX", "AVXL", "ADMA", "BCLI", "ACET", "KRUS", "BGSF",
+"LUNA", "ONCT", "VTSI", "SLGL", "KZIA", "DMRC", "FNCH", "XAIR", "TCON",
+"SABS", "LCTX", "CLRB", "FENC", "TFFP", "MNOV", "SNES", "ACHV", "RHE"
 ]
 
 start_date = "2023-01-01"
