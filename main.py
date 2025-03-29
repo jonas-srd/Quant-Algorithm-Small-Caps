@@ -1,14 +1,10 @@
-from StockPredictor import StockPredictor
-from Backtester import Backtester
+from stockpredictor import StockPredictor, Backtester
 import pdb
 
 small_caps = [
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA",
-    "TSLA", "META", "JPM", "V",
-    "MA", "UNH", "HD", "PEP", "KO",
-    "LLY", "ABBV", "XOM", "CVX", "BAC",
-    "WMT", "PG", "AVGO", "ADBE", "COST",
-    "ORCL", "TMO", "NKE", "INTC", "DIS"
+    "ACLS", "AEIS", "ALRM", "AMBA", "ATKR", "AVT", "BC", "BHE", "BJ", "CIR",
+    "CNK", "CR", "CVLT", "CVLT", "DORM", "ENSG", "ESNT", "FCFS", "FELE", "FNB",
+    "FORM", "GMS", "HUBG", "INSM", "IOSP", "KAI", "KAR", "LANC", "MMS", "NPO"
 
 ]
 
@@ -21,13 +17,18 @@ predictor.run(force_train=True)
 backtester = Backtester(model=predictor.model)
 
 # ✅ Select stocks and run backtest
-tickers = filtered_tickers = ["KOPN", "EYPT", "INBX", "AVXL", "ADMA", "BCLI", "ACET", "KRUS", "BGSF",
-"LUNA", "ONCT", "VTSI", "SLGL", "KZIA", "DMRC", "FNCH", "XAIR", "TCON",
-"SABS", "LCTX", "CLRB", "FENC", "MNOV", "SNES", "ACHV", "RHE"
+tickers = filtered_tickers = [
+    "BB", "PEP"
 ]
 
 start_date = "2023-01-01"
 end_date = "2024-01-01"
 
 backtester.run_backtest(tickers, start_date, end_date)
+
+backtester.plot_equity_curve()
+backtester.plot_rolling_roi()
+backtester.plot_return_distribution()
+backtester.plot_accuracy_per_stock()
+
 
