@@ -13,7 +13,10 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import lightning.pytorch as pl
 import pdb
+import feedparser
+import random
 
+from bs4 import BeautifulSoup
 from pytorch_forecasting import TimeSeriesDataSet
 from pytorch_forecasting.models.temporal_fusion_transformer import TemporalFusionTransformer
 from stable_baselines3 import PPO
@@ -33,6 +36,10 @@ class DataFetcher:
         self.tickers = tickers
         self.lookback_period = lookback_period
         self.data = {}
+        self.finbert = pipeline("sentiment-analysis", model="ProsusAI/finbert")
+        self.vader = SentimentIntensityAnalyzer()
+        self.fred_api_key = "d0176aa190f9a4db6dbf2ba6de6efc82"
+        self.NEWS_ARCHIVE_FILE = "yahoo_news_archive.csv"
 
     def fetch_stock_data(self, ticker):
         """Fetch historical stock data and compute technical indicators."""
@@ -72,47 +79,55 @@ class DataFetcher:
         df["KGV"] = df["Close"] / df["EPS"]
         df["KGV"] = df["KGV"].astype(float)  # Ensure KGV stays as float
 
-        # 📌 Add simulated revenue & cashflow data
-        df["Umsatz"] = np.random.uniform(1000000, 100000000, len(df))  # Simulated revenue
-        df["Cashflow"] = df["Umsatz"] * 0.15  # Assume 15% cashflow margin
 
         df.dropna(inplace=True)  # Drop NaN values
         df.reset_index(inplace=True)  # Reset index after dropping NaNs
 
         return df
 
-    def fetch_sentiment_data(self, ticker):
-        """Holt Twitter/News-Sentiment mit FinBERT + VADER"""
-        finbert = pipeline("sentiment-analysis", model="ProsusAI/finbert")
-        vader = SentimentIntensityAnalyzer()
 
-        sample_tweets = ["Stock is going up!", "Bad earnings report for Tesla!", "Bullish sentiment on TSLA"]
-        try:
-            sentiment_scores = [finbert(tweet)[0]["label"] for tweet in sample_tweets]
-            vader_scores = [vader.polarity_scores(tweet)['compound'] for tweet in sample_tweets]
-            return np.mean(vader_scores) if vader_scores else 0  # Handle empty response
-        except Exception as e:
-            print(f"⚠ Sentiment API Error: {e}")
-            return 0  # Return neutral sentiment if API fails
-        vader_scores = [vader.polarity_scores(tweet)['compound'] for tweet in sample_tweets]
-
-        return np.mean(vader_scores)  # Durchschnittlicher Sentiment-Score
-
-    def fetch_macro_data(self):
-        """Holt makroökonomische Daten (Inflation, Zinsen, Arbeitslosenquote)"""
-        macro_data = {
-            "Inflation": np.random.uniform(0, 5, len(self.tickers)),  # Platzhalter (API nötig für reale Daten)
-            "Zinsen": np.random.uniform(0, 5, len(self.tickers)),
-            "Arbeitslosenquote": np.random.uniform(3, 10, len(self.tickers))
+    def fetch_macro_data(self, start_date="2010-01-01"):
+        """Holt historische Makrodaten (CPI, Zinsen, Arbeitslosenquote) von der FRED API."""
+        fred_series = {
+            "CPI": "CPIAUCSL",  # Verbraucherpreisindex (inflationsbereinigt)
+            "Zinsen": "FEDFUNDS",  # Federal Funds Rate
+            "Arbeitslosenquote": "UNRATE"  # US Arbeitslosenquote
         }
-        return pd.DataFrame(macro_data)
+
+        macro_data = {}
+
+        for key, series_id in fred_series.items():
+            url = f"https://api.stlouisfed.org/fred/series/observations"
+            params = {
+                "series_id": series_id,
+                "api_key": self.fred_api_key,
+                "file_type": "json",
+                "frequency": "m",  # Monatliche Daten
+                "observation_start": start_date
+            }
+
+            response = requests.get(url, params=params)
+            if response.status_code == 200:
+                data = response.json()["observations"]
+                df = pd.DataFrame(data)
+                df["date"] = pd.to_datetime(df["date"])  # Konvertiere Datum in datetime-Format
+                df["value"] = df["value"].astype(float)  # Konvertiere Werte in Float
+                macro_data[key] = df.set_index("date")["value"]
+            else:
+                print(f"⚠ Fehler beim Abrufen von {key}: {response.status_code}")
+                macro_data[key] = None
+
+        # Kombiniere alle Daten in ein DataFrame
+        macro_df = pd.concat(macro_data.values(), axis=1)
+        macro_df.columns = macro_data.keys()  # Setze Spaltennamen (CPI, Zinsen, Arbeitslosenquote)
+
+        return macro_df
 
     def prepare_data(self):
         """Bereitet Daten für TFT vor"""
         for ticker in self.tickers:
             df = self.fetch_stock_data(ticker)
             if df is not None:
-                df["Sentiment"] = self.fetch_sentiment_data(ticker)
                 macro_data = self.fetch_macro_data()
                 df["Macro"] = macro_data.mean().values[0] if isinstance(macro_data, pd.DataFrame) else macro_data
                 df["ticker"] = ticker
@@ -191,7 +206,6 @@ class StockPredictor_TFT:
         print("✅ TFT Modell gespeichert als 'tft_model.pth'")
 
     def evaluate_model(self):
-        """Evaluiert das Modell, ob der Aktienkurs in 5 Tagen steigen oder fallen wird."""
 
         # Stelle sicher, dass das Modell geladen wurde
         if self.model is None:
@@ -222,7 +236,7 @@ class StockPredictor_TFT:
         if predictions.ndim == 3 and predictions.shape[-1] > 1:
             print(
                 f"⚠ Mehrdimensionale Vorhersagen gefunden: {predictions.shape}. Nutze das mittlere Quantil (Index 2).")
-            predictions = predictions[:, :, 2]  # Nimm das 50%-Quantil als zentrale Vorhersage
+            predictions = predictions[:, :, 3]  # Nimm das 50%-Quantil als zentrale Vorhersage
 
         # 📌 Falls Tensor, auf CPU verschieben und in NumPy-Array umwandeln
         if isinstance(predictions, torch.Tensor):
@@ -260,7 +274,7 @@ class StockPredictor_TFT:
         plt.title("Confusion Matrix")
         plt.show()
 
-    def load_model(self, force_train=False):
+    def load_model(self, force_train):
         """Lädt das gespeicherte Modell oder trainiert ein neues, falls nötig."""
         if force_train or not os.path.exists("tft_model.pth"):
             print("🔄 Training eines neuen Modells wird gestartet...")
@@ -296,44 +310,11 @@ class StockPredictor_TFT:
                 print("🚨 Starte das Training eines neuen Modells...")
                 self.train_tft()
 
-    def run(self, force_train=False):
+    def run(self, force_train):
         """Startet das Modell"""
         self.load_model(force_train=force_train)
         self.evaluate_model()
 
 
-# 📌 RL Trading-Agent mit PPO
-class RLTrader:
-    def __init__(self, df):
-        self.env = DummyVecEnv([lambda: TradingEnv(df)])
-        self.model = PPO("MlpPolicy", self.env, verbose=1)
-
-    def train(self):
-        print("🚀 Training RL-Trading-Agent...")
-        self.model.learn(total_timesteps=10000)
-        joblib.dump(self.model, "rl_trading_model.pkl")
-        print("✅ RL Modell gespeichert als 'rl_trading_model.pkl'")
-
-    def trade(self):
-        obs = self.env.reset()
-        for _ in range(100):
-            action, _states = self.model.predict(obs)
-            obs, reward, done, info = self.env.step(action)
-            if done:
-                break
-
-
-# 📌 Hauptlauf
-def run_system():
-    tickers = ["AAPL", "TSLA", "NVDA"]
-    data_fetcher = DataFetcher(tickers)
-    df = data_fetcher.prepare_data()
-
-    predictor = StockPredictor_TFT(df)
-    predictor.train_tft()
-
-    trader = RLTrader(df)
-    trader.train()
-    trader.trade()
 
 

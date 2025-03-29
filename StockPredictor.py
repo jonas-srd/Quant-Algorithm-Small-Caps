@@ -23,6 +23,7 @@ class StockPredictor:
         try:
             df = yf.download(ticker, period="10y", interval="1d")
 
+
             if df.empty:
                 print(f"⚠ Skipping {ticker}: No data available.")
                 return None
