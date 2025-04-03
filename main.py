@@ -4,13 +4,13 @@ import pdb
 small_caps = [
     "ACLS", "AEIS", "ALRM", "AMBA", "ATKR", "AVT", "BC", "BHE", "BJ", "CIR",
     "CNK", "CR", "CVLT", "CVLT", "DORM", "ENSG", "ESNT", "FCFS", "FELE", "FNB",
-    "FORM", "GMS", "HUBG", "INSM", "IOSP", "KAI", "KAR", "LANC", "MMS", "NPO"
+    "FORM", "GMS", "HUBG", "INSM", "IOSP", "KAI", "KAR", "LANC", "MMS"
 
 ]
 
 
 predictor = StockPredictor(tickers=small_caps)
-predictor.run(force_train=True)
+predictor.run(force_train=False)
 
 
 # ✅ Pass only the trained model to Backtester
@@ -18,7 +18,8 @@ backtester = Backtester(model=predictor.model)
 
 # ✅ Select stocks and run backtest
 tickers = filtered_tickers = [
-    "BB", "PEP"
+    "BB", "PEP","TSLA","aapl","msft","amzn","googl","meta","nvda","brk-b","jpm","jnj","xom"
+
 ]
 
 start_date = "2023-01-01"
