@@ -127,7 +127,6 @@ class StockPredictor:
                 df = df.join(macro_df, how="left")
 
                 df.dropna(inplace=True)
-                print(df.head())
                 self.data[ticker] = df
 
         for ticker, df in self.data.items():

@@ -4,6 +4,7 @@ import pandas as pd
 from collections import defaultdict
 from .predictor import StockPredictor
 import pdb
+import yfinance as yf
 
 
 
@@ -40,7 +41,6 @@ class Backtester:
         macro_df.index = pd.to_datetime(macro_df.index)
 
         stock_data = {}
-        pdb.set_trace()
         for ticker in tickers:
             df = self.stock_predictor.fetch_stock_data(ticker)
             if df is not None:
@@ -84,6 +84,7 @@ class Backtester:
             probs = self.model.predict_proba(features)[0]
             predictions[ticker] = probs
 
+
         if not predictions:
             return None, None, None
 
@@ -120,6 +121,7 @@ class Backtester:
         i = 0
         while i < max_length - self.future_prediction_days:
             if open_trade is None:
+
                 best_stock, trade_type, trade_prob = self.predict_best_stock(stock_data, i)
 
                 if best_stock:
@@ -204,17 +206,33 @@ class Backtester:
         print(f"📈 Total ROI: {roi:.2f}%")
         print(f"🎯 Prediction Accuracy: {prediction_accuracy:.2f}%")
 
-    def plot_equity_curve(self):
+    def plot_equity_curve(self, start_date, end_date):
         trade_df = pd.DataFrame(self.trade_log)
+        if trade_df.empty:
+            print("⚠ Kein Trade-Log vorhanden. Keine Equity Curve anzeigbar.")
+            return
+
         trade_df["Trade End Date"] = pd.to_datetime(trade_df["Trade End Date"])
         trade_df.sort_values("Trade End Date", inplace=True)
         trade_df.set_index("Trade End Date", inplace=True)
 
-        plt.figure(figsize=(10, 6))
-        plt.plot(trade_df["Balance"], marker='o')
-        plt.title("Equity Curve")
-        plt.xlabel("Date")
-        plt.ylabel("Balance")
+        # Initialwert
+        initial_balance = trade_df["Balance"].iloc[0]
+        trade_df["Equity %"] = (trade_df["Balance"] / initial_balance - 1) * 100
+
+        # Hole S&P 500 Daten (SPY als Proxy)
+        spy = yf.download("^GSPC", start=start_date, end=end_date, interval="1d")
+        spy = spy.loc[spy.index >= trade_df.index[0]]  # auf den Backtest-Zeitraum beschränken
+        spy["SPY %"] = (spy["Close"] / spy["Close"].iloc[0] - 1) * 100
+
+        # Plot
+        plt.figure(figsize=(12, 6))
+        plt.plot(trade_df.index, trade_df["Equity %"], label="Quant Strategy", marker='o')
+        plt.plot(spy.index, spy["SPY %"], label="S&P 500", linestyle='--')
+        plt.title("Prozentuale Equity Curve vs. S&P 500")
+        plt.xlabel("Datum")
+        plt.ylabel("Veränderung [%]")
+        plt.legend()
         plt.grid(True)
         plt.tight_layout()
         plt.show()
@@ -267,5 +285,23 @@ class Backtester:
         plt.show()
 
 
+    def plot_trade_count_per_stock(self):
+        trade_df = pd.DataFrame(self.trade_log)
+
+        if trade_df.empty:
+            print("⚠ Kein Trade-Log vorhanden.")
+            return
+
+        trade_counts = trade_df["Stock"].value_counts()
+
+        plt.figure(figsize=(10, 5))
+        plt.bar(trade_counts.index, trade_counts.values)
+        plt.xticks(rotation=90)
+        plt.title("Anzahl der Trades pro Aktie")
+        plt.xlabel("Aktie")
+        plt.ylabel("Trade-Anzahl")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
 
 
