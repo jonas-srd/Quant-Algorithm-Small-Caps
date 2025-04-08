@@ -1,7 +1,11 @@
-import yfinance as yf
 import numpy as np
-import xgboost as xgb
 import matplotlib.pyplot as plt
+import pandas as pd
+from collections import defaultdict
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
+import xgboost as xgb
 import seaborn as sns
 from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
 from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
@@ -9,7 +13,6 @@ import pdb
 import joblib
 import os
 import requests
-import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 
 
@@ -24,6 +27,10 @@ class StockPredictor:
         self.fred_api_key = "d0176aa190f9a4db6dbf2ba6de6efc82"
         self.start_date = start_date
         self.end_date = end_date
+        self.alpaca_client = StockHistoricalDataClient(
+            api_key="PKHZI2GPSTTI8XH7FVA8",
+            secret_key="fZhOrdjXLDhhggvMaBCBcAQ5wVvJ5OopIIZkZKve"
+        )
 
     def fetch_macro_data(self, start_date=None, end_date=None):
         start_date = start_date or self.start_date
@@ -58,28 +65,40 @@ class StockPredictor:
                 macro_data[key] = None
         macro_df = pd.concat(macro_data.values(), axis=1)
         macro_df.columns = macro_data.keys()
-        macro_df = macro_df.resample("D").ffill().dropna()
+        macro_df = macro_df.resample("h").ffill().dropna()
+        macro_df.index.name = "timestamp"
         return macro_df
 
     def fetch_stock_data(self, ticker):
         try:
-            df = yf.download(ticker, start=self.start_date, end=self.end_date, interval="1d")
-            if df.empty:
+            request_params = StockBarsRequest(
+                symbol_or_symbols=ticker,
+                timeframe=TimeFrame.Hour,
+                start=self.start_date,
+                end=self.end_date
+            )
+            bars = self.alpaca_client.get_stock_bars(request_params).df
+            if bars.empty:
                 print(f"⚠ Skipping {ticker}: No data available.")
                 return None
 
-            df["Moving_Avg"] = df["Close"].rolling(window=self.lookback_period).mean()
-            df["Std_Dev"] = df["Close"].rolling(window=self.lookback_period).std()
+            df = bars.reset_index()
+            df = df[df["symbol"] == ticker].drop(columns="symbol").copy()
+            df.set_index("timestamp", inplace=True)
+            df.index = df.index.tz_convert(None)
+
+            df["Moving_Avg"] = df["close"].rolling(window=self.lookback_period).mean()
+            df["Std_Dev"] = df["close"].rolling(window=self.lookback_period).std()
             df["Upper_Band"] = df["Moving_Avg"] + (self.std_dev_factor * df["Std_Dev"])
             df["Lower_Band"] = df["Moving_Avg"] - (self.std_dev_factor * df["Std_Dev"])
-            df["ATR"] = df["High"].rolling(window=14).max() - df["Low"].rolling(window=14).min()
-            df["MACD"] = df["Close"].ewm(span=12, adjust=False).mean() - df["Close"].ewm(span=26, adjust=False).mean()
+            df["ATR"] = df["high"].rolling(window=14).max() - df["low"].rolling(window=14).min()
+            df["MACD"] = df["close"].ewm(span=12, adjust=False).mean() - df["close"].ewm(span=26, adjust=False).mean()
             df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
             df["Bollinger_Width"] = (df["Upper_Band"] - df["Lower_Band"]) / df["Moving_Avg"]
-            df["ROC"] = ((df["Close"] - df["Close"].shift(10)) / df["Close"].shift(10)) * 100
+            df["ROC"] = ((df["close"] - df["close"].shift(10)) / df["close"].shift(10)) * 100
             df["ADX"] = df["ATR"].rolling(window=14).mean()
 
-            delta = df["Close"].diff()
+            delta = df["close"].diff()
             gain = delta.where(delta > 0, 0)
             loss = -delta.where(delta < 0, 0)
             avg_gain = gain.rolling(window=14, min_periods=1).mean()
@@ -87,8 +106,19 @@ class StockPredictor:
             rs = avg_gain / avg_loss
             df["RSI"] = 100 - (100 / (1 + rs))
 
+            df.rename(columns={
+                "close": "Close",
+                "high": "High",
+                "low": "Low",
+                "open": "Open",
+                "volume": "Volume"
+            }, inplace=True)
+
             df.replace([np.inf, -np.inf], np.nan, inplace=True)
             df.dropna(inplace=True)
+
+            df["Ticker"] = ticker
+            df = df.set_index("Ticker", append=True).reorder_levels(["Ticker", "timestamp"])
             return df
         except Exception as e:
             print(f"❌ Error fetching data for {ticker}: {e}")
@@ -99,7 +129,7 @@ class StockPredictor:
         for ticker in self.tickers:
             df = self.fetch_stock_data(ticker)
             if df is not None:
-                min_dates.append(df.index.min())
+                min_dates.append(df.index.get_level_values("timestamp").min())
         if min_dates:
             min_start_date = min(min_dates).strftime("%Y-%m-%d")
         else:
@@ -114,18 +144,7 @@ class StockPredictor:
         for ticker in self.tickers:
             df = self.fetch_stock_data(ticker)
             if df is not None:
-                df = df.copy()
-
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-
-                df.index.name = "Date"
-                df = df.reset_index().set_index("Date")
-
-                macro_df.index = pd.to_datetime(macro_df.index)
-
                 df = df.join(macro_df, how="left")
-
                 df.dropna(inplace=True)
                 self.data[ticker] = df
 
@@ -149,6 +168,7 @@ class StockPredictor:
                 )
 
         return np.array(X), np.array(y)
+
 
     def train_model(self):
         X, y = self.prepare_data()

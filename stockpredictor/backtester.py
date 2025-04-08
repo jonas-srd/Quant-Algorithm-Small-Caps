@@ -4,15 +4,16 @@ import pandas as pd
 from collections import defaultdict
 from .predictor import StockPredictor
 import pdb
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
 import yfinance as yf
 
-
-
 class Backtester:
-    def __init__(self, model, future_prediction_days=5, trading_fee=0.005, risk_per_trade=0.1, stop_loss=0.01,
-                 take_profit=0.04, lookback_period=10, std_dev_factor=2, min_prob_threshold=0.8):
+    def __init__(self, model, future_prediction_hours=24, trading_fee=0.005, risk_per_trade=0.1, stop_loss=0.01,
+                 take_profit=0.04, lookback_period=10, std_dev_factor=2, min_prob_threshold=0.9):
         self.model = model
-        self.future_prediction_days = future_prediction_days
+        self.future_prediction_hours = future_prediction_hours
         self.trading_fee = trading_fee
         self.risk_per_trade = risk_per_trade
         self.stop_loss = stop_loss
@@ -23,79 +24,85 @@ class Backtester:
         self.trade_log = []
         self.correct_predictions = 0
 
-        # Create StockPredictor instance to reuse its fetch methods
+        self.alpaca_client = StockHistoricalDataClient(
+            api_key="PKHZI2GPSTTI8XH7FVA8",
+            secret_key="fZhOrdjXLDhhggvMaBCBcAQ5wVvJ5OopIIZkZKve"
+        )
+
         self.stock_predictor = StockPredictor(
             tickers=[],
             lookback_period=self.lookback_period,
             std_dev_factor=self.std_dev_factor,
-            future_prediction_days=self.future_prediction_days
+            future_prediction_days=1
         )
 
     def fetch_stock_data(self, tickers, start_date, end_date):
         self.stock_predictor.tickers = tickers
 
-
-        # Hole Makrodaten einmal
         macro_df = self.stock_predictor.fetch_macro_data(start_date=start_date, end_date=end_date)
-
-        macro_df.index = pd.to_datetime(macro_df.index)
+        macro_df.index = pd.to_datetime(macro_df.index).tz_localize(None)
+        macro_df.index.name = "timestamp"
 
         stock_data = {}
         for ticker in tickers:
-            df = self.stock_predictor.fetch_stock_data(ticker)
-            if df is not None:
-                df = df.copy()
+            request_params = StockBarsRequest(
+                symbol_or_symbols=ticker,
+                timeframe=TimeFrame.Hour,
+                start=start_date,
+                end=end_date
+            )
+            try:
+                bars = self.alpaca_client.get_stock_bars(request_params).df
 
-                # 🛠 Fix für MultiIndex-Spalten
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
+                if bars.empty:
+                    print(f"⚠ No data for {ticker}")
+                    continue
 
-                # 🛠 Sicherstellen, dass Index korrekt ist
-                df.index.name = "Date"
-                df = df.reset_index().set_index("Date")
+                df = bars.reset_index()
+                df = df[df["symbol"] == ticker].drop(columns="symbol").copy()
+                df.set_index("timestamp", inplace=True)
+                df.index = df.index.tz_convert(None)
 
-                # 🧠 Merge der Makrodaten wie in prepare_data()
-                df = df.join(macro_df, how="left")
+                df["Moving_Avg"] = df["close"].rolling(window=self.lookback_period).mean()
+                df["Std_Dev"] = df["close"].rolling(window=self.lookback_period).std()
+                df["Upper_Band"] = df["Moving_Avg"] + (self.std_dev_factor * df["Std_Dev"])
+                df["Lower_Band"] = df["Moving_Avg"] - (self.std_dev_factor * df["Std_Dev"])
+                df["ATR"] = df["high"].rolling(window=14).max() - df["low"].rolling(window=14).min()
+                df["MACD"] = df["close"].ewm(span=12, adjust=False).mean() - df["close"].ewm(span=26, adjust=False).mean()
+                df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
+                df["Bollinger_Width"] = (df["Upper_Band"] - df["Lower_Band"]) / df["Moving_Avg"]
+                df["ROC"] = ((df["close"] - df["close"].shift(10)) / df["close"].shift(10)) * 100
+                df["ADX"] = df["ATR"].rolling(window=14).mean()
 
+                delta = df["close"].diff()
+                gain = delta.where(delta > 0, 0)
+                loss = -delta.where(delta < 0, 0)
+                avg_gain = gain.rolling(window=14, min_periods=1).mean()
+                avg_loss = loss.rolling(window=14, min_periods=1).mean()
+                rs = avg_gain / avg_loss
+                df["RSI"] = 100 - (100 / (1 + rs))
+
+                df.rename(columns={
+                    "close": "Close",
+                    "high": "High",
+                    "low": "Low",
+                    "open": "Open",
+                    "volume": "Volume"
+                }, inplace=True)
+
+                df.replace([np.inf, -np.inf], np.nan, inplace=True)
                 df.dropna(inplace=True)
 
-                # Optional: MultiIndex (Ticker, Date), wie in deinem bisherigen Code
                 df["Ticker"] = ticker
-                df = df.set_index("Ticker", append=True).reorder_levels(["Ticker", "Date"])
+                df = df.set_index("Ticker", append=True).reorder_levels(["Ticker", "timestamp"])
+                df = df.join(macro_df, how="left")
+                df.dropna(inplace=True)
 
                 stock_data[ticker] = df
 
+            except Exception as e:
+                print(f"❌ Failed to load data for {ticker}: {e}")
         return stock_data
-
-    def predict_best_stock(self, stock_data, index):
-        predictions = {}
-
-        for ticker, df in stock_data.items():
-            if df is None or len(df) <= index:
-                continue
-
-            features = df.iloc[index][[
-                "Close", "Moving_Avg", "Upper_Band", "Lower_Band",
-                "MACD", "MACD_Signal", "RSI", "ATR",
-                "Bollinger_Width", "ROC", "ADX",
-                "CPI", "Zinsen", "Arbeitslosenquote"
-            ]].values.reshape(1, -1)
-
-            probs = self.model.predict_proba(features)[0]
-            predictions[ticker] = probs
-
-
-        if not predictions:
-            return None, None, None
-
-        best_ticker, (p_down, p_up) = max(predictions.items(), key=lambda item: max(item[1]))
-        trade_type = "Long" if p_up >= p_down else "Short"
-        trade_prob = max(p_up, p_down)
-
-        if trade_prob < self.min_prob_threshold:
-            return None, None, None
-
-        return best_ticker, trade_type, trade_prob
 
     def run_backtest(self, tickers, start_date, end_date):
         stock_data = self.fetch_stock_data(tickers, start_date, end_date)
@@ -122,9 +129,9 @@ class Backtester:
 
         open_trades = []
         i = 0
-        while i < max_length - self.future_prediction_days:
+        while i < max_length - self.future_prediction_hours:
             current_date = None
-            available_balance = balance * (1 - self.risk_per_trade * len(open_trades))  # 💡 Recalculate available balance
+            available_balance = balance * (1 - self.risk_per_trade * len(open_trades))
 
             for ticker in tickers:
                 df = stock_data[ticker]
@@ -132,7 +139,7 @@ class Backtester:
                     continue
 
                 if current_date is None:
-                    current_date = df.index[i][1]  # Save current date for equity tracking
+                    current_date = df.index[i][1]
 
                 features = df.iloc[i][[
                     "Close", "Moving_Avg", "Upper_Band", "Lower_Band",
@@ -159,8 +166,8 @@ class Backtester:
                             "trade_amount": trade_amount,
                             "open": True,
                             "prob": prob,
-                            "entry_date": df.index[i][1].strftime("%Y-%m-%d"),
-                            "max_duration": 10
+                            "entry_date": df.index[i][1].strftime("%Y-%m-%d %H:%M:%S"),
+                            "max_duration": 240  # e.g., 24 hours
                         })
                         trade_count += 1
 
@@ -173,10 +180,10 @@ class Backtester:
                 entry_day = trade["entry_day"]
                 trade_age = i - entry_day
 
-                if entry_day + self.future_prediction_days >= len(df):
+                if entry_day + self.future_prediction_hours >= len(df):
                     continue
 
-                future_prices = df.iloc[entry_day + 1: entry_day + 1 + self.future_prediction_days]["Close"]
+                future_prices = df.iloc[entry_day + 1: entry_day + 1 + self.future_prediction_hours]["Close"]
                 max_price = future_prices.max()
                 min_price = future_prices.min()
 
@@ -216,12 +223,12 @@ class Backtester:
                         self.correct_predictions += 1
 
                     trade_start_date = trade["entry_date"]
-                    trade_end_date = df.index[i][1].strftime("%Y-%m-%d")
+                    trade_end_date = df.index[i][1].strftime("%Y-%m-%d %H:%M:%S")
 
                     self.trade_log.append({
                         "Trade Start Date": trade_start_date,
                         "Trade End Date": trade_end_date,
-                        "Day": entry_day,
+                        "Hour": entry_day,
                         "Stock": trade["ticker"],
                         "Trade Type": trade_outcome,
                         "Trade Price": trade["entry_price"],
@@ -237,7 +244,7 @@ class Backtester:
             open_trades = new_open_trades
 
             if current_date:
-                equity_curve.append({"Date": current_date.strftime("%Y-%m-%d"), "Equity": balance})
+                equity_curve.append({"Date": current_date.strftime("%Y-%m-%d %H:%M:%S"), "Equity": balance})
 
             i += 1
 
@@ -258,34 +265,52 @@ class Backtester:
         equity_df.to_csv("equity_curve.csv", index=False)
         print("📈 Equity curve saved as 'equity_curve.csv'")
 
-
     def plot_equity_curve(self, start_date, end_date):
         # 📥 Load Equity Curve
         equity_df = pd.read_csv("equity_curve.csv")
         equity_df["Date"] = pd.to_datetime(equity_df["Date"])
         equity_df.set_index("Date", inplace=True)
 
-        # 📈 Load S&P 500 Data
-        spy = yf.download("^GSPC", start=start_date, end=end_date, interval="1d")
-        spy = spy.loc[spy.index.isin(equity_df.index)]
-        spy["SPY Equity"] = spy["Close"] / spy["Close"].iloc[0] * equity_df["Equity"].iloc[0]
 
-        # 📊 Calculate percentage change
-        equity_df["Equity %"] = (equity_df["Equity"] / equity_df["Equity"].iloc[0] - 1) * 100
-        spy["SPY %"] = (spy["SPY Equity"] / spy["SPY Equity"].iloc[0] - 1) * 100
+        request_params = StockBarsRequest(
+            symbol_or_symbols="SPY",
+            timeframe=TimeFrame.Hour,
+            start=start_date,
+            end=end_date
+        )
 
-        # 🖼️ Plot
-        plt.figure(figsize=(12, 6))
-        plt.plot(equity_df.index, equity_df["Equity %"], label="XGBoost Share Predictor", linewidth=2)
-        plt.plot(spy.index, spy["SPY %"], label="S&P 500", linestyle='--', linewidth=2)
-        plt.title("Percentage Change in Portfolio Value vs. S&P 500")
-        plt.xlabel("Date")
-        plt.ylabel("Change [%]")
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.show()
+        try:
+            bars = self.alpaca_client.get_stock_bars(request_params).df
 
+            if isinstance(bars.index, pd.MultiIndex):
+                bars = bars.reset_index(level="symbol", drop=True)
+
+            # Zeitzone entfernen
+            bars.index = bars.index.tz_convert(None)
+
+            bars.rename(columns={"close": "Close"}, inplace=True)
+            bars = bars[["Close"]]
+            bars = bars.loc[bars.index.isin(equity_df.index)]
+            bars["SPY Equity"] = bars["Close"] / bars["Close"].iloc[0] * equity_df["Equity"].iloc[0]
+
+            # 📊 Calculate percentage change
+            equity_df["Equity %"] = (equity_df["Equity"] / equity_df["Equity"].iloc[0] - 1) * 100
+            bars["SPY %"] = (bars["SPY Equity"] / bars["SPY Equity"].iloc[0] - 1) * 100
+
+            # 🖼️ Plot
+            plt.figure(figsize=(12, 6))
+            plt.plot(equity_df.index, equity_df["Equity %"], label="XGBoost Share Predictor", linewidth=2)
+            plt.plot(bars.index, bars["SPY %"], label="S&P 500 (Hourly)", linestyle='--', linewidth=2)
+            plt.title("Percentage Change in Portfolio Value vs. S&P 500")
+            plt.xlabel("Time")
+            plt.ylabel("Change [%]")
+            plt.legend()
+            plt.grid(True)
+            plt.tight_layout()
+            plt.show()
+
+        except Exception as e:
+            print(f"❌ Failed to load SPY data: {e}")
 
     def plot_rolling_roi(self, window=5):
         trade_df = pd.DataFrame(self.trade_log)

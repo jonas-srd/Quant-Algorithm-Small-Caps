@@ -24,24 +24,21 @@ small_caps = [
 
 ]
 
-start_date = "2013-01-01"
-end_date = "2025-01-01"
+start_date = "2023-01-01"
+end_date = "2024-01-01"
 
 predictor = StockPredictor(tickers=small_caps, start_date=start_date, end_date=end_date)
 predictor.run(force_train=False)
 
 
-# ✅ Pass only the trained model to Backtester
 backtester = Backtester(model=predictor.model)
 
-# ✅ Select stocks and run backtest
 tickers = filtered_tickers = [
      "CLW", "CRUS", "CUBI", "CVCO", "CYTK",
       "ESEA", "FARO", "FOSL", "GCO", "HLIT",  "IIIN"
-
 ]
 
-start_date = "2013-01-01"
+start_date = "2020-01-01"
 end_date = "2025-04-07"
 
 backtester.run_backtest(tickers, start_date, end_date)
