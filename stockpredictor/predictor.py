@@ -14,7 +14,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 
 class StockPredictor:
-    def __init__(self, tickers, lookback_period=20, std_dev_factor=2, future_prediction_days=5):
+    def __init__(self, tickers, lookback_period=20, std_dev_factor=2, future_prediction_days=5, start_date=None, end_date=None):
         self.tickers = tickers
         self.lookback_period = lookback_period
         self.std_dev_factor = std_dev_factor
@@ -22,8 +22,12 @@ class StockPredictor:
         self.data = {}
         self.model = None
         self.fred_api_key = "d0176aa190f9a4db6dbf2ba6de6efc82"
+        self.start_date = start_date
+        self.end_date = end_date
 
-    def fetch_macro_data(self, start_date="2010-01-01"):
+    def fetch_macro_data(self, start_date=None, end_date=None):
+        start_date = start_date or self.start_date
+        end_date = end_date or self.end_date
         fred_series = {
             "CPI": "CPIAUCSL",
             "Zinsen": "FEDFUNDS",
@@ -39,6 +43,9 @@ class StockPredictor:
                 "frequency": "m",
                 "observation_start": start_date
             }
+            if end_date:
+                params["observation_end"] = end_date
+
             response = requests.get(url, params=params)
             if response.status_code == 200:
                 data = response.json()["observations"]
@@ -52,13 +59,11 @@ class StockPredictor:
         macro_df = pd.concat(macro_data.values(), axis=1)
         macro_df.columns = macro_data.keys()
         macro_df = macro_df.resample("D").ffill().dropna()
-        scaler = MinMaxScaler()
-        macro_df[macro_df.columns] = scaler.fit_transform(macro_df)
         return macro_df
 
     def fetch_stock_data(self, ticker):
         try:
-            df = yf.download(ticker, period="10y", interval="1d")
+            df = yf.download(ticker, start=self.start_date, end=self.end_date, interval="1d")
             if df.empty:
                 print(f"⚠ Skipping {ticker}: No data available.")
                 return None
@@ -90,7 +95,6 @@ class StockPredictor:
             return None
 
     def prepare_data(self):
-        # Ermittele das früheste Datum aller Aktien zur dynamischen Anpassung
         min_dates = []
         for ticker in self.tickers:
             df = self.fetch_stock_data(ticker)
@@ -99,10 +103,10 @@ class StockPredictor:
         if min_dates:
             min_start_date = min(min_dates).strftime("%Y-%m-%d")
         else:
-            min_start_date = "2010-01-01"
+            min_start_date = self.start_date
 
         print(f"📅 Makro-Startdatum (dynamisch bestimmt): {min_start_date}")
-        macro_df = self.fetch_macro_data(start_date=min_start_date)
+        macro_df = self.fetch_macro_data(start_date=min_start_date, end_date=self.end_date)
 
         self.data = {}
         X, y = [], []
@@ -112,22 +116,18 @@ class StockPredictor:
             if df is not None:
                 df = df.copy()
 
-                # 🛠 Fix für MultiIndex-Spalten
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
 
-                # 🛠 Sicherstellen, dass Index korrekt ist
                 df.index.name = "Date"
                 df = df.reset_index().set_index("Date")
 
-                # 🛠 Sicherstellen, dass auch macro_df einen einfachen DatetimeIndex hat
                 macro_df.index = pd.to_datetime(macro_df.index)
 
-                # 🧠 Merge der Makrodaten
                 df = df.join(macro_df, how="left")
 
                 df.dropna(inplace=True)
-                print(df.head())  # Vorschau nach dem Join
+                print(df.head())
                 self.data[ticker] = df
 
         for ticker, df in self.data.items():

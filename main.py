@@ -8,9 +8,11 @@ small_caps = [
 
 ]
 
+start_date = "2010-01-01"
+end_date = "2025-01-01"
 
-predictor = StockPredictor(tickers=small_caps)
-predictor.run(force_train=False)
+predictor = StockPredictor(tickers=small_caps, start_date=start_date, end_date=end_date)
+predictor.run(force_train=True)
 
 
 # ✅ Pass only the trained model to Backtester

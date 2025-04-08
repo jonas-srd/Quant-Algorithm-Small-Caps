@@ -33,20 +33,14 @@ class Backtester:
     def fetch_stock_data(self, tickers, start_date, end_date):
         self.stock_predictor.tickers = tickers
 
-        # Bestimme frühestes Startdatum wie in prepare_data()
-        min_dates = []
-        for ticker in tickers:
-            df = self.stock_predictor.fetch_stock_data(ticker)
-            if df is not None:
-                min_dates.append(df.index.min())
-        min_start_date = min(min_dates).strftime("%Y-%m-%d") if min_dates else start_date
 
         # Hole Makrodaten einmal
-        macro_df = self.stock_predictor.fetch_macro_data(start_date=min_start_date)
+        macro_df = self.stock_predictor.fetch_macro_data(start_date=start_date, end_date=end_date)
+
         macro_df.index = pd.to_datetime(macro_df.index)
 
         stock_data = {}
-
+        pdb.set_trace()
         for ticker in tickers:
             df = self.stock_predictor.fetch_stock_data(ticker)
             if df is not None:
@@ -250,6 +244,7 @@ class Backtester:
         plt.grid(True)
         plt.tight_layout()
         plt.show()
+
 
     def plot_accuracy_per_stock(self):
         stock_hits = defaultdict(lambda: {"correct": 0, "total": 0})
