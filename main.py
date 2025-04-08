@@ -37,12 +37,12 @@ backtester = Backtester(model=predictor.model)
 # ✅ Select stocks and run backtest
 tickers = filtered_tickers = [
      "CLW", "CRUS", "CUBI", "CVCO", "CYTK",
-     "EBC", "EMBC", "ESEA", "FARO", "FOSL", "GCO", "HLIT",  "IIIN"
+      "ESEA", "FARO", "FOSL", "GCO", "HLIT",  "IIIN"
 
 ]
 
-start_date = "2024-01-01"
-end_date = "2025-01-01"
+start_date = "2018-01-01"
+end_date = "2025-04-07"
 
 backtester.run_backtest(tickers, start_date, end_date)
 backtester.plot_equity_curve(start_date, end_date)
