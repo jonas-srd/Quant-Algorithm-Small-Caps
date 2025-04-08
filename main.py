@@ -24,7 +24,7 @@ small_caps = [
 
 ]
 
-start_date = "2010-01-01"
+start_date = "2013-01-01"
 end_date = "2025-01-01"
 
 predictor = StockPredictor(tickers=small_caps, start_date=start_date, end_date=end_date)
@@ -41,7 +41,7 @@ tickers = filtered_tickers = [
 
 ]
 
-start_date = "2018-01-01"
+start_date = "2013-01-01"
 end_date = "2025-04-07"
 
 backtester.run_backtest(tickers, start_date, end_date)

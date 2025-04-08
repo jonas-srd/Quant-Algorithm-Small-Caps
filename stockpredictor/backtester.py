@@ -276,8 +276,8 @@ class Backtester:
 
         # 🖼️ Plot
         plt.figure(figsize=(12, 6))
-        plt.plot(equity_df.index, equity_df["Equity %"], label="Quant Strategy [%]", linewidth=2)
-        plt.plot(spy.index, spy["SPY %"], label="S&P 500 [%]", linestyle='--', linewidth=2)
+        plt.plot(equity_df.index, equity_df["Equity %"], label="XGBoost Share Predictor", linewidth=2)
+        plt.plot(spy.index, spy["SPY %"], label="S&P 500", linestyle='--', linewidth=2)
         plt.title("Percentage Change in Portfolio Value vs. S&P 500")
         plt.xlabel("Date")
         plt.ylabel("Change [%]")
