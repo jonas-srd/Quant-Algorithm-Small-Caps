@@ -7,7 +7,6 @@ import pdb
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
-import yfinance as yf
 
 class Backtester:
     def __init__(self, model, future_prediction_hours=24, trading_fee=0.005, risk_per_trade=0.1, stop_loss=0.01,
@@ -209,6 +208,39 @@ class Backtester:
                     exit_price = df.iloc[i]["Close"]
                     trade_outcome = f"{trade['type']} Timeout"
 
+                    trade_fee = trade["trade_amount"] * self.trading_fee
+                    profit_loss = (exit_price - trade["entry_price"]) / trade["entry_price"]
+                    if trade["type"] == "Short":
+                        profit_loss = -profit_loss  # Gewinn bei fallendem Kurs
+                    trade_result = trade["trade_amount"] * profit_loss
+                    balance += trade_result - trade_fee
+                    trade["open"] = False
+
+                    actual_movement = int((exit_price > trade["entry_price"]) if trade["type"] == "Long" else (
+                                exit_price < trade["entry_price"]))
+                    predicted_movement = 1 if trade["type"] == "Long" else 0
+
+                    if actual_movement == predicted_movement:
+                        self.correct_predictions += 1
+
+                    trade_start_date = trade["entry_date"]
+                    trade_end_date = df.index[i][1].strftime("%Y-%m-%d %H:%M:%S")
+
+                    self.trade_log.append({
+                        "Trade Start Date": trade_start_date,
+                        "Trade End Date": trade_end_date,
+                        "Hour": entry_day,
+                        "Stock": trade["ticker"],
+                        "Trade Type": trade_outcome,
+                        "Trade Price": trade["entry_price"],
+                        "Exit Price": exit_price,
+                        "Profit/Loss": trade_result,
+                        "Fees": trade_fee,
+                        "Balance": balance,
+                        "Prediction Prob": trade["prob"]
+                    })
+                    continue
+
                 if exit_price is not None:
                     trade_fee = trade["trade_amount"] * self.trading_fee
                     profit_loss = (exit_price - trade["entry_price"]) / trade["entry_price"]
@@ -300,7 +332,7 @@ class Backtester:
             # 🖼️ Plot
             plt.figure(figsize=(12, 6))
             plt.plot(equity_df.index, equity_df["Equity %"], label="XGBoost Share Predictor", linewidth=2)
-            plt.plot(bars.index, bars["SPY %"], label="S&P 500 (Hourly)", linestyle='--', linewidth=2)
+            plt.plot(bars.index, bars["SPY %"], label="S&P 500", linestyle='--', linewidth=2)
             plt.title("Percentage Change in Portfolio Value vs. S&P 500")
             plt.xlabel("Time")
             plt.ylabel("Change [%]")

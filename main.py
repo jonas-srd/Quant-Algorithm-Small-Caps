@@ -38,7 +38,7 @@ tickers = filtered_tickers = [
       "ESEA", "FARO", "FOSL", "GCO", "HLIT",  "IIIN"
 ]
 
-start_date = "2020-01-01"
+start_date = "2015-01-01"
 end_date = "2025-04-07"
 
 backtester.run_backtest(tickers, start_date, end_date)

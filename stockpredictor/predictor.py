@@ -227,12 +227,12 @@ class StockPredictor:
 
     def load_model(self, force_train=False):
         if force_train or not os.path.exists("trained_model.pkl"):
-            print("🔄 Training eines neuen Modells wird gestartet...")
+            print("Train new Models...")
             self.train_model()
         else:
-            print("✅ Lade gespeichertes Modell...")
+            print("Load saved Model...")
             self.model, self.data, self.X_test, self.y_test = joblib.load("trained_model.pkl")
-            print("✅ Modell und Daten geladen!")
+            print("Model and Data are loaded!")
 
     def predict(self, X):
         if self.model is None:
