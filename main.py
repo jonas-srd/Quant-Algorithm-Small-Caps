@@ -1,5 +1,15 @@
 from stockpredictor import StockPredictor, Backtester
 import pdb
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
+from datetime import datetime
+
+# 🔐 Deine Alpaca API-Keys hier eintragen
+client = StockHistoricalDataClient(
+    api_key="PKHZI2GPSTTI8XH7FVA8",
+    secret_key="fZhOrdjXLDhhggvMaBCBcAQ5wVvJ5OopIIZkZKve"
+)
 
 small_caps = [
     "ACLS", "AEIS", "ALRM", "AMBA", "ATKR", "AVT", "BC", "BHE", "BJ",
@@ -21,11 +31,10 @@ small_caps = [
     "GRBK", "GRFS",  "HAFC", "HCSG",  "HSTM", "ICUI", "IDXX",
     "INDB", "INSG", "INVA", "IPAR", "IRMD", "ITRI", "JACK", "JYNT", "KIDS", "KNSA",
     "KOPN",  "KTOS",  "LECO", "LIVN", "LPRO", "LPSN", "LUNA", "LWAY"
-
 ]
 
-start_date = "2023-01-01"
-end_date = "2024-01-01"
+start_date = "2016-01-09"
+end_date = "2025-04-09"
 
 predictor = StockPredictor(tickers=small_caps, start_date=start_date, end_date=end_date)
 predictor.run(force_train=False)
@@ -33,13 +42,15 @@ predictor.run(force_train=False)
 
 backtester = Backtester(model=predictor.model)
 
-tickers = filtered_tickers = [
-     "CLW", "CRUS", "CUBI", "CVCO", "CYTK",
-      "ESEA", "FARO", "FOSL", "GCO", "HLIT",  "IIIN"
-]
+tickers = filtered_tickers = ["ANDE", "CVCO", "HLIT",
+ "MMS", "LANC", "AIR", "OSUR", "RDNT", "BXC", "PATK"]
 
-start_date = "2015-01-01"
-end_date = "2025-04-07"
+
+
+start_date = "2022-10-01"
+end_date = "2025-04-09"
+
+
 
 backtester.run_backtest(tickers, start_date, end_date)
 backtester.plot_equity_curve(start_date, end_date)

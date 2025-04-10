@@ -9,8 +9,8 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 class Backtester:
-    def __init__(self, model, future_prediction_hours=24, trading_fee=0.005, risk_per_trade=0.1, stop_loss=0.01,
-                 take_profit=0.04, lookback_period=10, std_dev_factor=2, min_prob_threshold=0.9):
+    def __init__(self, model, future_prediction_hours=24, trading_fee=0.005, risk_per_trade=0.2, stop_loss=0.01,
+                 take_profit=0.04, lookback_period=10, std_dev_factor=2, min_prob_threshold=0.7):
         self.model = model
         self.future_prediction_hours = future_prediction_hours
         self.trading_fee = trading_fee
@@ -97,7 +97,10 @@ class Backtester:
                 df = df.join(macro_df, how="left")
                 df.dropna(inplace=True)
 
-                stock_data[ticker] = df
+                stock_data[ticker] = df#
+                print(f"\n📈 Head von {ticker}:")
+                print(df)
+
 
             except Exception as e:
                 print(f"❌ Failed to load data for {ticker}: {e}")
@@ -110,8 +113,8 @@ class Backtester:
             print("⚠ No valid stock data found. Exiting backtest.")
             return
 
-        initial_balance = 10_000
-        balance = initial_balance
+        self.balance = 10_000
+        initial_balance = self.balance
         trade_count = 0
         self.trade_log = []
         self.correct_predictions = 0
@@ -130,7 +133,7 @@ class Backtester:
         i = 0
         while i < max_length - self.future_prediction_hours:
             current_date = None
-            available_balance = balance * (1 - self.risk_per_trade * len(open_trades))
+            available_balance = self.balance * (1 - self.risk_per_trade * len(open_trades))
 
             for ticker in tickers:
                 df = stock_data[ticker]
@@ -154,7 +157,8 @@ class Backtester:
                 if prob >= self.min_prob_threshold:
                     trade_type = "Long" if p_up >= p_down else "Short"
                     trade_entry_price = df.iloc[i]["Close"].item()
-                    trade_amount = balance * self.risk_per_trade
+
+                    trade_amount = self.balance * self.risk_per_trade
 
                     if available_balance >= trade_amount:
                         open_trades.append({
@@ -166,7 +170,7 @@ class Backtester:
                             "open": True,
                             "prob": prob,
                             "entry_date": df.index[i][1].strftime("%Y-%m-%d %H:%M:%S"),
-                            "max_duration": 240  # e.g., 24 hours
+                            "max_duration": 240
                         })
                         trade_count += 1
 
@@ -183,104 +187,57 @@ class Backtester:
                     continue
 
                 future_prices = df.iloc[entry_day + 1: entry_day + 1 + self.future_prediction_hours]["Close"]
-                max_price = future_prices.max()
-                min_price = future_prices.min()
 
                 exit_price = None
                 trade_outcome = None
 
-                if trade["type"] == "Long":
-                    if max_price >= trade["entry_price"] * (1 + self.take_profit):
-                        exit_price = trade["entry_price"] * (1 + self.take_profit)
-                        trade_outcome = "Long Profit"
-                    elif min_price <= trade["entry_price"] * (1 - self.stop_loss):
-                        exit_price = trade["entry_price"] * (1 - self.stop_loss)
-                        trade_outcome = "Long Stop Loss"
-                elif trade["type"] == "Short":
-                    if min_price <= trade["entry_price"] * (1 - self.take_profit):
-                        exit_price = trade["entry_price"] * (1 + self.take_profit)
-                        trade_outcome = "Short Profit"
-                    elif max_price >= trade["entry_price"] * (1 + self.stop_loss):
-                        exit_price = trade["entry_price"] * (1 - self.stop_loss)
-                        trade_outcome = "Short Stop Loss"
+                tp_level_long = trade["entry_price"] * (1 + self.take_profit)
+                sl_level_long = trade["entry_price"] * (1 - self.stop_loss)
+                tp_level_short = trade["entry_price"] * (1 - self.take_profit)
+                sl_level_short = trade["entry_price"] * (1 + self.stop_loss)
 
+                for price in future_prices:
+                    if trade["type"] == "Long":
+                        if price >= tp_level_long:
+                            exit_price = tp_level_long
+                            trade_outcome = "Long Profit"
+                            break
+                        elif price <= sl_level_long:
+                            exit_price = sl_level_long
+                            trade_outcome = "Long Stop Loss"
+                            break
+                    elif trade["type"] == "Short":
+                        if price <= tp_level_short:
+                            exit_price = tp_level_short
+                            trade_outcome = "Short Profit"
+                            break
+                        elif price >= sl_level_short:
+                            exit_price = sl_level_short
+                            trade_outcome = "Short Stop Loss"
+                            break
+
+                # Timeout
                 if exit_price is None and trade_age >= trade["max_duration"]:
-                    exit_price = df.iloc[i]["Close"]
+
+                    exit_price = df.iloc[entry_day + 1 + self.future_prediction_hours]["Close"]
                     trade_outcome = f"{trade['type']} Timeout"
-
-                    trade_fee = trade["trade_amount"] * self.trading_fee
-                    profit_loss = (exit_price - trade["entry_price"]) / trade["entry_price"]
-                    if trade["type"] == "Short":
-                        profit_loss = -profit_loss  # Gewinn bei fallendem Kurs
-                    trade_result = trade["trade_amount"] * profit_loss
-                    balance += trade_result - trade_fee
-                    trade["open"] = False
-
-                    actual_movement = int((exit_price > trade["entry_price"]) if trade["type"] == "Long" else (
-                                exit_price < trade["entry_price"]))
-                    predicted_movement = 1 if trade["type"] == "Long" else 0
-
-                    if actual_movement == predicted_movement:
-                        self.correct_predictions += 1
-
-                    trade_start_date = trade["entry_date"]
-                    trade_end_date = df.index[i][1].strftime("%Y-%m-%d %H:%M:%S")
-
-                    self.trade_log.append({
-                        "Trade Start Date": trade_start_date,
-                        "Trade End Date": trade_end_date,
-                        "Hour": entry_day,
-                        "Stock": trade["ticker"],
-                        "Trade Type": trade_outcome,
-                        "Trade Price": trade["entry_price"],
-                        "Exit Price": exit_price,
-                        "Profit/Loss": trade_result,
-                        "Fees": trade_fee,
-                        "Balance": balance,
-                        "Prediction Prob": trade["prob"]
-                    })
+                    self.close_trade(trade, exit_price, df.index[i][1], trade_outcome)
                     continue
 
+                # Take Profit or Stop Loss
                 if exit_price is not None:
-                    trade_fee = trade["trade_amount"] * self.trading_fee
-                    profit_loss = (exit_price - trade["entry_price"]) / trade["entry_price"]
-                    trade_result = trade["trade_amount"] * profit_loss
-                    balance += trade_result - trade_fee
-                    trade["open"] = False
-
-                    actual_movement = int((exit_price > trade["entry_price"]) if trade["type"] == "Long" else (exit_price < trade["entry_price"]))
-                    predicted_movement = 1 if trade["type"] == "Long" else 0
-
-                    if actual_movement == predicted_movement:
-                        self.correct_predictions += 1
-
-                    trade_start_date = trade["entry_date"]
-                    trade_end_date = df.index[i][1].strftime("%Y-%m-%d %H:%M:%S")
-
-                    self.trade_log.append({
-                        "Trade Start Date": trade_start_date,
-                        "Trade End Date": trade_end_date,
-                        "Hour": entry_day,
-                        "Stock": trade["ticker"],
-                        "Trade Type": trade_outcome,
-                        "Trade Price": trade["entry_price"],
-                        "Exit Price": exit_price,
-                        "Profit/Loss": trade_result,
-                        "Fees": trade_fee,
-                        "Balance": balance,
-                        "Prediction Prob": trade["prob"]
-                    })
+                    self.close_trade(trade, exit_price, df.index[i][1], trade_outcome)
                 else:
                     new_open_trades.append(trade)
 
             open_trades = new_open_trades
 
             if current_date:
-                equity_curve.append({"Date": current_date.strftime("%Y-%m-%d %H:%M:%S"), "Equity": balance})
+                equity_curve.append({"Date": current_date.strftime("%Y-%m-%d %H:%M:%S"), "Equity": self.balance})
 
             i += 1
 
-        final_balance = balance
+        final_balance = self.balance
         roi = ((final_balance - initial_balance) / initial_balance) * 100
         prediction_accuracy = (self.correct_predictions / trade_count) * 100 if trade_count > 0 else 0
 
@@ -296,6 +253,38 @@ class Backtester:
         equity_df = pd.DataFrame(equity_curve)
         equity_df.to_csv("equity_curve.csv", index=False)
         print("📈 Equity curve saved as 'equity_curve.csv'")
+
+    def close_trade(self, trade, exit_price, current_date, trade_outcome):
+        trade_fee = trade["trade_amount"] * self.trading_fee
+        profit_loss = (exit_price - trade["entry_price"]) / trade["entry_price"]
+        if trade["type"] == "Short":
+            profit_loss = -profit_loss
+
+
+
+        trade_result = trade["trade_amount"] * profit_loss
+        self.balance += trade_result - trade_fee
+        trade["open"] = False
+
+        actual_movement = int(
+            (exit_price > trade["entry_price"]) if trade["type"] == "Long" else (exit_price < trade["entry_price"]))
+        predicted_movement = 1 if trade["type"] == "Long" else 0
+        if actual_movement == predicted_movement:
+            self.correct_predictions += 1
+
+        self.trade_log.append({
+            "Trade Start Date": trade["entry_date"],
+            "Trade End Date": current_date.strftime("%Y-%m-%d %H:%M:%S"),
+            "Hour": trade["entry_day"],
+            "Stock": trade["ticker"],
+            "Trade Type": trade_outcome,
+            "Trade Price": trade["entry_price"],
+            "Exit Price": exit_price,
+            "Profit/Loss": trade_result,
+            "Fees": trade_fee,
+            "Balance": self.balance,
+            "Prediction Prob": trade["prob"]
+        })
 
     def plot_equity_curve(self, start_date, end_date):
         # 📥 Load Equity Curve

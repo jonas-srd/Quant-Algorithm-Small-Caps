@@ -17,7 +17,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 
 class StockPredictor:
-    def __init__(self, tickers, lookback_period=20, std_dev_factor=2, future_prediction_days=5, start_date=None, end_date=None):
+    def __init__(self, tickers, lookback_period=10, std_dev_factor=2, future_prediction_days=2, start_date=None, end_date=None):
         self.tickers = tickers
         self.lookback_period = lookback_period
         self.std_dev_factor = std_dev_factor
