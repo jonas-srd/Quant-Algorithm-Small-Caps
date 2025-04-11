@@ -13,7 +13,10 @@ import pdb
 import joblib
 import os
 import requests
+import yfinance as yf
 from sklearn.preprocessing import MinMaxScaler
+from datetime import datetime
+
 
 
 class StockPredictor:
@@ -33,6 +36,7 @@ class StockPredictor:
         )
 
     def fetch_macro_data(self, start_date=None, end_date=None):
+
         start_date = start_date or self.start_date
         end_date = end_date or self.end_date
         fred_series = {
@@ -41,6 +45,8 @@ class StockPredictor:
             "Arbeitslosenquote": "UNRATE"
         }
         macro_data = {}
+
+        # 1. FRED-Daten abrufen
         for key, series_id in fred_series.items():
             url = f"https://api.stlouisfed.org/fred/series/observations"
             params = {
@@ -63,11 +69,56 @@ class StockPredictor:
             else:
                 print(f"⚠ Fehler beim Abrufen von {key}: {response.status_code}")
                 macro_data[key] = None
+
+        # 2. VIX von Yahoo Finance
+        try:
+            vix = yf.download("^VIX", start=start_date, end=end_date, interval="1d")["Close"]
+            vix.name = "VIX"
+            macro_data["VIX"] = vix
+        except Exception as e:
+            print(f"⚠ Fehler beim Abrufen des VIX: {e}")
+
+        # 3. WTI Rohölpreis von Yahoo Finance
+        try:
+            oil = yf.download("CL=F", start=start_date, end=end_date, interval="1d")["Close"]
+            oil.name = "Oil_Price"
+            macro_data["Oil_Price"] = oil
+        except Exception as e:
+            print(f"⚠ Fehler beim Abrufen des Ölpreises: {e}")
         macro_df = pd.concat(macro_data.values(), axis=1)
         macro_df.columns = macro_data.keys()
-        macro_df = macro_df.resample("h").ffill().dropna()
+        macro_df = macro_df.ffill()
+        macro_df.index = pd.to_datetime(macro_df.index)
+        macro_df = macro_df[~macro_df.index.duplicated(keep='first')]  # Optional: Duplikate entfernen
+        macro_df = macro_df.resample("h").ffill()
+
         macro_df.index.name = "timestamp"
+        macro_df.to_csv("macro_data_hourly.csv")
         return macro_df
+
+    def auto_update_macro(self, days_buffer=2):
+        """
+        Aktualisiert die Makrodaten, falls neuere Daten als in der gespeicherten CSV vorhanden sein könnten.
+        """
+        today = datetime.today().date()
+        file_path = "macro_data_hourly.csv"
+
+        if os.path.exists(file_path):
+            try:
+                macro_df = pd.read_csv(file_path, index_col="timestamp", parse_dates=True)
+                last_date = macro_df.index[-1].date()
+                if (today - last_date).days >= days_buffer:
+                    print(f"🔄 Aktualisiere Makrodaten: letzte bekannte Zeile vom {last_date}")
+                    self.fetch_macro_data(start_date=macro_df.index[0].strftime("%Y-%m-%d"),
+                                          end_date=today.strftime("%Y-%m-%d"))
+                else:
+                    print(f"✅ Makrodaten aktuell (bis {last_date}) – kein Update nötig.")
+            except Exception as e:
+                print(f"⚠ Fehler beim Lesen von Makro-CSV: {e} – lade neu.")
+                self.fetch_macro_data(start_date="2018-01-01", end_date=today.strftime("%Y-%m-%d"))
+        else:
+            print("📂 Makro-CSV nicht gefunden – lade vollständige Daten.")
+            self.fetch_macro_data(start_date="2018-01-01", end_date=today.strftime("%Y-%m-%d"))
 
     def fetch_stock_data(self, ticker):
         try:
@@ -154,7 +205,8 @@ class StockPredictor:
                     "Close", "Moving_Avg", "Upper_Band", "Lower_Band",
                     "MACD", "MACD_Signal", "RSI", "ATR",
                     "Bollinger_Width", "ROC", "ADX",
-                    "CPI", "Zinsen", "Arbeitslosenquote"
+                    "CPI", "Zinsen", "Arbeitslosenquote",
+                    "VIX", "Oil_Price"
                 ]].values
 
                 if np.any(np.isnan(features)) or np.any(np.isinf(features)):
@@ -219,7 +271,7 @@ class StockPredictor:
         feature_importance = self.model.feature_importances_
         plt.figure(figsize=(10,6))
         plt.barh(["Close", "Moving_Avg", "Upper_Band", "Lower_Band", "MACD", "MACD_Signal", "RSI", "ATR",
-                  "Bollinger_Width", "ROC", "ADX", "CPI", "Zinsen", "Arbeitslosenquote"], feature_importance)
+                  "Bollinger_Width", "ROC", "ADX", "CPI", "Zinsen", "Arbeitslosenquote", "VIX", "Oil_Price"], feature_importance)
         plt.xlabel("Feature Importance")
         plt.ylabel("Features")
         plt.title("Feature Importance Plot")
@@ -227,7 +279,7 @@ class StockPredictor:
 
     def load_model(self, force_train=False):
         if force_train or not os.path.exists("trained_model.pkl"):
-            print("Train new Models...")
+            print("Train new Model...")
             self.train_model()
         else:
             print("Load saved Model...")

@@ -37,7 +37,6 @@ class Backtester:
 
     def fetch_stock_data(self, tickers, start_date, end_date):
         self.stock_predictor.tickers = tickers
-
         macro_df = self.stock_predictor.fetch_macro_data(start_date=start_date, end_date=end_date)
         macro_df.index = pd.to_datetime(macro_df.index).tz_localize(None)
         macro_df.index.name = "timestamp"
@@ -100,7 +99,7 @@ class Backtester:
                 stock_data[ticker] = df#
                 print(f"\n📈 Head von {ticker}:")
                 print(df)
-
+                df.to_csv("stock_data.csv")
 
             except Exception as e:
                 print(f"❌ Failed to load data for {ticker}: {e}")
@@ -147,7 +146,7 @@ class Backtester:
                     "Close", "Moving_Avg", "Upper_Band", "Lower_Band",
                     "MACD", "MACD_Signal", "RSI", "ATR",
                     "Bollinger_Width", "ROC", "ADX",
-                    "CPI", "Zinsen", "Arbeitslosenquote"
+                    "CPI", "Zinsen", "Arbeitslosenquote", "VIX", "Oil_Price"
                 ]].values.reshape(1, -1)
 
                 probs = self.model.predict_proba(features)[0]
@@ -287,12 +286,17 @@ class Backtester:
         })
 
     def plot_equity_curve(self, start_date, end_date):
-        # 📥 Load Equity Curve
-        equity_df = pd.read_csv("equity_curve.csv")
-        equity_df["Date"] = pd.to_datetime(equity_df["Date"])
-        equity_df.set_index("Date", inplace=True)
+        # 📥 Load trade log
+        equity_df = pd.read_csv("trade_log.csv")
 
+        # ✅ Korrekte Spaltennamen
+        equity_df["Trade End Date"] = pd.to_datetime(equity_df["Trade End Date"])
+        equity_df.sort_values("Trade End Date", inplace=True)
+        equity_df.set_index("Trade End Date", inplace=True)
 
+        equity_df["Equity"] = equity_df["Balance"]
+
+        # ✅ SPY Daten laden
         request_params = StockBarsRequest(
             symbol_or_symbols="SPY",
             timeframe=TimeFrame.Hour,
@@ -306,25 +310,25 @@ class Backtester:
             if isinstance(bars.index, pd.MultiIndex):
                 bars = bars.reset_index(level="symbol", drop=True)
 
-            # Zeitzone entfernen
             bars.index = bars.index.tz_convert(None)
-
             bars.rename(columns={"close": "Close"}, inplace=True)
             bars = bars[["Close"]]
-            bars = bars.loc[bars.index.isin(equity_df.index)]
-            bars["SPY Equity"] = bars["Close"] / bars["Close"].iloc[0] * equity_df["Equity"].iloc[0]
 
-            # 📊 Calculate percentage change
+            # SPY auf gleiche Zeitstempel wie Equity df bringen
+            bars = bars.loc[bars.index.isin(equity_df.index)]
+
+            # 📊 Relative Performance berechnen
+            bars["SPY Equity"] = bars["Close"] / bars["Close"].iloc[0] * equity_df["Equity"].iloc[0]
             equity_df["Equity %"] = (equity_df["Equity"] / equity_df["Equity"].iloc[0] - 1) * 100
             bars["SPY %"] = (bars["SPY Equity"] / bars["SPY Equity"].iloc[0] - 1) * 100
 
-            # 🖼️ Plot
+            # 🖼️ Plotten
             plt.figure(figsize=(12, 6))
-            plt.plot(equity_df.index, equity_df["Equity %"], label="XGBoost Share Predictor", linewidth=2)
+            plt.plot(equity_df.index, equity_df["Equity %"], label="XGBoost Portfolio", linewidth=2)
             plt.plot(bars.index, bars["SPY %"], label="S&P 500", linestyle='--', linewidth=2)
-            plt.title("Percentage Change in Portfolio Value vs. S&P 500")
-            plt.xlabel("Time")
-            plt.ylabel("Change [%]")
+            plt.title("Portfolio vs. S&P 500 (prozentuale Veränderung)")
+            plt.xlabel("Datum")
+            plt.ylabel("Veränderung [%]")
             plt.legend()
             plt.grid(True)
             plt.tight_layout()
