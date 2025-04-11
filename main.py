@@ -3,7 +3,7 @@ import pdb
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # 🔐 Deine Alpaca API-Keys hier eintragen
 client = StockHistoricalDataClient(
@@ -34,7 +34,7 @@ small_caps = [
 ]
 
 start_date = "2016-01-09"
-end_date = "2025-04-09"
+end_date = datetime.now() - timedelta(hours=3)
 
 predictor = StockPredictor(tickers=small_caps, start_date=start_date, end_date=end_date)
 predictor.run(force_train=False)
@@ -53,11 +53,11 @@ if mode == "backtest":
     backtester.plot_trade_count_per_stock()
 
 elif mode == "paper":
-    trader = PaperTrader(
-        predictor=predictor,
-        alpaca_key="PKHZI2GPSTTI8XH7FVA8",
-        alpaca_secret="fZhOrdjXLDhhggvMaBCBcAQ5wVvJ5OopIIZkZKve"
-    )
+    alpaca_key = "PKHZI2GPSTTI8XH7FVA8",
+    alpaca_secret = "fZhOrdjXLDhhggvMaBCBcAQ5wVvJ5OopIIZkZKve"
+    trader = PaperTrader(predictor, alpaca_key, alpaca_secret,
+                         email_address="jonas.schroeder@hotmail.de",
+                         email_password="Jonas0302")
     trader.run_live_loop(interval_minutes=60)
 
 

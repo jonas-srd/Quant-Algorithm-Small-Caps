@@ -2,15 +2,16 @@ import time
 import pandas as pd
 import numpy as np
 import alpaca_trade_api as tradeapi
-from datetime import datetime
+from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+import yagmail
 
 
 class PaperTrader:
-    def __init__(self, predictor, alpaca_key, alpaca_secret, paper_url="https://paper-api.alpaca.markets"):
+    def __init__(self, predictor, alpaca_key, alpaca_secret, email_address, email_password, paper_url="https://paper-api.alpaca.markets"):
         self.predictor = predictor
         self.api = tradeapi.REST(
             alpaca_key,
@@ -25,6 +26,9 @@ class PaperTrader:
         self.positions = {}
         self.trade_log = []
         self.last_macro_update_day = None
+        self.stock_cache = {}
+        self.email_address = email_address
+        self.email_password = email_password
         self.update_macro_if_needed()
 
     def update_macro_if_needed(self):
@@ -34,40 +38,71 @@ class PaperTrader:
             self.predictor.auto_update_macro()
             self.last_macro_update_day = today
 
-    def get_latest_features(self, df):
-        latest = df.iloc[-1][[
-            "Close", "Moving_Avg", "Upper_Band", "Lower_Band", "MACD", "MACD_Signal", "RSI", "ATR",
-            "Bollinger_Width", "ROC", "ADX", "CPI", "Zinsen", "Arbeitslosenquote", "VIX", "Oil_Price"
-        ]]
-        if np.any(np.isnan(latest)) or np.any(np.isinf(latest)):
-            return None, None
-        return latest.values.reshape(1, -1), latest["Close"]
+    def fetch_stock_data_cached(self, ticker):
+        now = datetime.now()
+        cached = self.stock_cache.get(ticker, {})
 
-    def run_live_loop(self, interval_minutes=60, total_cycles=7):
-        """
-        Live-Trading Loop.
-        Führt alle 'interval_minutes' einen Trade-Zyklus aus und stoppt nach 'total_cycles' Durchläufen.
-        """
-        print(f"🚀 Starte Paper-Trading mit 10.000 $ Kapital")
+        if cached:
+            df = cached['data']
+            last_time = df.index.get_level_values("timestamp").max()
+            start = last_time + timedelta(hours=1)
+
+            try:
+                client = StockHistoricalDataClient(
+                    api_key=self.api._key_id,
+                    secret_key=self.api._secret_key
+                )
+                request = StockBarsRequest(
+                    symbol_or_symbols=ticker,
+                    timeframe=TimeFrame.Hour,
+                    start=start,
+                    end=now
+                )
+                new_data = client.get_stock_bars(request).df
+                if not new_data.empty:
+                    new_data = new_data.reset_index()
+                    new_data = new_data[new_data["symbol"] == ticker].drop(columns="symbol")
+                    new_data.set_index("timestamp", inplace=True)
+                    new_data.index = new_data.index.tz_convert(None)
+
+                    new_data["Ticker"] = ticker
+                    new_data = new_data.set_index("Ticker", append=True).reorder_levels(["Ticker", "timestamp"])
+
+                    df = pd.concat([df, new_data])
+                    df = df[~df.index.duplicated(keep="last")]
+                    df.sort_index(inplace=True)
+                    self.stock_cache[ticker]['data'] = df
+                    self.stock_cache[ticker]['timestamp'] = now
+                    print(f"📥 Neue Daten für {ticker} bis {df.index.get_level_values('timestamp').max()} geladen.")
+                else:
+                    print(f"ℹ️ Keine neuen Daten für {ticker} seit {last_time}.")
+            except Exception as e:
+                print(f"⚠ Fehler beim Anhängen neuer Daten für {ticker}: {e}")
+
+            return df
+
+        df = self.predictor.fetch_stock_data(ticker)
+        if df is not None:
+            self.stock_cache[ticker] = {'data': df, 'timestamp': now}
+            print(f"✅ Initiale Daten für {ticker} geladen bis {df.index.get_level_values('timestamp').max()}.")
+        return df
+
+    def run_live_loop(self, interval_minutes=60):
+        print(f"🚀 Starte dauerhaften Paper-Trading Loop mit 10.000 $ Kapital")
         cycle = 0
-
-        while cycle < total_cycles:
-            print(f"\n🕒 Zyklus {cycle + 1} von {total_cycles}")
+        while True:
+            print(f"\n🕒 Zyklus {cycle + 1}")
             self.update_macro_if_needed()
 
-            # Schritt 1: Nur 20% der Ticker zufällig wählen
             selected_tickers = np.random.choice(
                 self.predictor.tickers,
-                size=max(1, len(self.predictor.tickers) // 5),
+                size=min(20, len(self.predictor.tickers)),
                 replace=False
             )
 
-            # Schritt 2: Pro Ticker Wahrscheinlichkeiten berechnen
-            ticker_candidates = []
-
+            candidates = []
             for ticker in selected_tickers:
-                print(f"\n🔍 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} – Analysiere {ticker}")
-                df = self.predictor.fetch_stock_data(ticker)
+                df = self.fetch_stock_data_cached(ticker)
                 if df is None or df.empty:
                     continue
 
@@ -79,8 +114,12 @@ class PaperTrader:
                     print(f"❌ Makrodatenfehler: {e}")
                     continue
 
-                features, price = self.get_latest_features(df)
-                if features is None:
+                features = df.iloc[-1][[
+                    "Close", "Moving_Avg", "Upper_Band", "Lower_Band", "MACD", "MACD_Signal", "RSI", "ATR",
+                    "Bollinger_Width", "ROC", "ADX", "CPI", "Zinsen", "Arbeitslosenquote", "VIX", "Oil_Price"
+                ]].values.reshape(1, -1)
+
+                if np.any(np.isnan(features)) or np.any(np.isinf(features)):
                     continue
 
                 probs = self.predictor.model.predict_proba(features)[0]
@@ -88,57 +127,34 @@ class PaperTrader:
                 prob = max(p_down, p_up)
 
                 if prob >= self.min_prob_threshold:
-                    ticker_candidates.append({
-                        "ticker": ticker,
-                        "price": price,
-                        "prob": prob,
-                        "p_up": p_up,
-                        "p_down": p_down,
-                        "features": features,
-                        "df": df
-                    })
+                    candidates.append((ticker, prob, p_up, p_down, df))
 
-            # Schritt 3: Sortiere nach Wahrscheinlichkeit und wähle die Top 6
-            top_candidates = sorted(ticker_candidates, key=lambda x: x["prob"], reverse=True)[:6]
+            top_candidates = sorted(candidates, key=lambda x: x[1], reverse=True)[:6]
 
-            if not top_candidates:
-                print("❗ Kein Trade-Kandidat mit ausreichender Wahrscheinlichkeit.")
-                cycle += 1
-                time.sleep(interval_minutes * 60)
-                continue
-
-            for candidate in top_candidates:
-                ticker = candidate["ticker"]
-                price = candidate["price"]
-                features = candidate["features"]
-                df = candidate["df"]
-                p_up = candidate["p_up"]
-                p_down = candidate["p_down"]
-                prob = candidate["prob"]
-
+            for ticker, prob, p_up, p_down, df in top_candidates:
+                price = df.iloc[-1]["Close"]
                 trade_type = "Long" if p_up >= p_down else "Short"
-                entry_price = price
                 position = self.positions.get(ticker)
 
                 if position is None:
                     trade_amount = self.cash * self.risk_per_trade
-                    qty = int(trade_amount // entry_price)
+                    qty = int(trade_amount // price)
                     if qty == 0:
                         print(f"⚠ Nicht genug Kapital für Trade mit {ticker}")
                         continue
 
                     self.positions[ticker] = {
                         "type": trade_type,
-                        "entry_price": entry_price,
+                        "entry_price": price,
                         "entry_time": datetime.now(),
                         "qty": qty,
-                        "amount": qty * entry_price,
+                        "amount": qty * price,
                         "prob": prob
                     }
-                    self.cash -= qty * entry_price
-                    print(f"✅ {trade_type} eröffnet: {qty} x {ticker} @ {entry_price:.2f} $ | Cash: {self.cash:.2f} $")
+                    self.cash -= qty * price
+                    print(f"✅ {trade_type} eröffnet: {qty} x {ticker} @ {price:.2f} $ | Cash: {self.cash:.2f} $")
                 else:
-                    current_price = entry_price
+                    current_price = price
                     outcome = None
                     if position["type"] == "Long":
                         if current_price >= position["entry_price"] * (1 + self.take_profit):
@@ -156,8 +172,7 @@ class PaperTrader:
                         if position["type"] == "Short":
                             pnl = -pnl
                         self.cash += position["qty"] * current_price + pnl
-                        print(
-                            f"💰 {outcome} – {ticker} geschlossen @ {current_price:.2f} $ | PnL: {pnl:.2f} $ | Cash: {self.cash:.2f} $")
+                        print(f"💰 {outcome} – {ticker} geschlossen @ {current_price:.2f} $ | PnL: {pnl:.2f} $ | Cash: {self.cash:.2f} $")
                         self.trade_log.append({
                             "Ticker": ticker,
                             "Type": position["type"],
@@ -172,15 +187,11 @@ class PaperTrader:
                         })
                         del self.positions[ticker]
 
-            print(
-                f"\n📊 Zyklus {cycle + 1} abgeschlossen – Portfolio-Wert: {self.cash:.2f} $ | Offene Positionen: {len(self.positions)}")
+            if datetime.now().hour == 20:  # Beispielzeitpunkt für tägliche Auswertung
+                self.send_daily_report()
+
             cycle += 1
             time.sleep(interval_minutes * 60)
-
-        # ✅ Nach letztem Zyklus: Log & Plot
-        print("\n📁 Trading-Zyklus abgeschlossen. Exportiere Log & visualisiere Performance...")
-        self.export_trade_log()
-        self.visualize_performance()
 
     def export_trade_log(self, filename="paper_trade_log.csv"):
         if not self.trade_log:
@@ -190,9 +201,9 @@ class PaperTrader:
         df.to_csv(filename, index=False)
         print(f"📝 Trade-Log gespeichert als: {filename}")
 
-    def visualize_performance(self):
+    def send_daily_report(self):
         if not self.trade_log:
-            print("⚠ Kein Trade-Log vorhanden – kein Plot möglich.")
+            print("⚠ Kein Trade-Log zum Versenden vorhanden.")
             return
 
         df = pd.DataFrame(self.trade_log)
@@ -200,42 +211,17 @@ class PaperTrader:
         df = df.sort_values("Time")
         df["Cumulative PnL"] = df["PnL"].cumsum()
 
-        plt.figure(figsize=(10, 5))
-        plt.plot(df["Time"], df["Cumulative PnL"], marker='o', linestyle='-', label="Trader Performance")
-        plt.axhline(0, color="red", linestyle="--", label="Break-even")
+        last_day = df["Time"].dt.date.max()
+        summary = df[df["Time"].dt.date == last_day].copy()
 
-        # Vergleich mit SPY
-        start_time = df["Time"].iloc[0].strftime("%Y-%m-%d")
-        end_time = df["Time"].iloc[-1].strftime("%Y-%m-%d")
+        message = f"Täglicher Report für {last_day}\n"
+        message += f"Abschlüsse: {len(summary)}\n"
+        message += f"Gesamter Tagesgewinn: {summary['PnL'].sum():.2f} $\n"
+        message += f"Kumulierte Gesamtperformance: {df['Cumulative PnL'].iloc[-1]:.2f} $\n"
 
-        try:
-            client = StockHistoricalDataClient(
-                api_key="PKHZI2GPSTTI8XH7FVA8",
-                secret_key="fZhOrdjXLDhhggvMaBCBcAQ5wVvJ5OopIIZkZKve"
-            )
-            request = StockBarsRequest(
-                symbol_or_symbols="SPY",
-                timeframe=TimeFrame.Hour,
-                start=start_time,
-                end=end_time
-            )
-            bars = client.get_stock_bars(request).df
-            bars = bars.reset_index(level="symbol", drop=True)
-            bars.index = bars.index.tz_convert(None)
-            bars = bars[~bars.index.duplicated(keep='first')]
-            bars = bars[["close"]].rename(columns={"close": "SPY"})
-            bars = bars.loc[bars.index.isin(df["Time"])]
+        filename = f"daily_report_{last_day}.csv"
+        summary.to_csv(filename, index=False)
 
-            bars["SPY Performance"] = (bars["SPY"] / bars["SPY"].iloc[0] - 1) * df["Cumulative PnL"].iloc[-1]
-            plt.plot(bars.index, bars["SPY Performance"], linestyle='--', label="S&P 500")
-
-        except Exception as e:
-            print(f"⚠ SPY-Daten konnten nicht geladen werden: {e}")
-
-        plt.title("Kumulierte Performance vs. S&P 500")
-        plt.xlabel("Zeit")
-        plt.ylabel("Kumulierter Gewinn / Verlust ($)")
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.show()
+        yag = yagmail.SMTP(self.email_address, self.email_password)
+        yag.send(to=self.email_address, subject=f"Daily Trading Report {last_day}", contents=message, attachments=filename)
+        print(f"📧 E-Mail Report für {last_day} gesendet an {self.email_address}")
