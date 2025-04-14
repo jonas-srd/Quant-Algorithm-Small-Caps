@@ -28,3 +28,4 @@ reports/
 # IDEs/Editoren
 .vscode/
 .idea/
+trained_model.pkl
