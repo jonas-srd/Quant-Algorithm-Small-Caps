@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs & temporäre Dateien
+*.log
+*.tmp
+*.out
+
+# Betriebssystem
+.DS_Store
+Thumbs.db
+
+# Environment-Dateien
+.env
+
+# Modelle & gespeicherte Daten
+*.pkl
+*.csv
+data/
+reports/
+
+# Jupyter/IPython
+.ipynb_checkpoints/
+
+# IDEs/Editoren
+.vscode/
+.idea/

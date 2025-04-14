@@ -1,0 +1,13 @@
+numpy
+pandas
+matplotlib
+xgboost
+scikit-learn
+seaborn
+alpaca-trade-api
+yfinance
+requests
+joblib
+python-dotenv
+yagmail
+
