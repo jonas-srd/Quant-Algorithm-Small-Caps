@@ -1,16 +1,26 @@
+import os
 import numpy as np
-import matplotlib.pyplot as plt
 import pandas as pd
-from collections import defaultdict
+import matplotlib.pyplot as plt
 from .predictor import StockPredictor
-import pdb
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+
 class Backtester:
-    def __init__(self, model, future_prediction_hours=24, trading_fee=0.005, risk_per_trade=0.2, stop_loss=0.01,
-                 take_profit=0.04, lookback_period=10, std_dev_factor=2, min_prob_threshold=0.7):
+    def __init__(
+        self,
+        model,
+        future_prediction_hours=24,
+        trading_fee=0.005,
+        risk_per_trade=0.2,
+        stop_loss=0.01,
+        take_profit=0.04,
+        lookback_period=10,
+        std_dev_factor=2,
+        min_prob_threshold=0.7
+    ):
         self.model = model
         self.future_prediction_hours = future_prediction_hours
         self.trading_fee = trading_fee
@@ -24,8 +34,8 @@ class Backtester:
         self.correct_predictions = 0
 
         self.alpaca_client = StockHistoricalDataClient(
-            api_key="PKHZI2GPSTTI8XH7FVA8",
-            secret_key="fZhOrdjXLDhhggvMaBCBcAQ5wVvJ5OopIIZkZKve"
+            api_key=os.getenv("ALPACA_API_KEY"),
+            secret_key=os.getenv("ALPACA_SECRET_KEY")
         )
 
         self.stock_predictor = StockPredictor(
@@ -37,37 +47,36 @@ class Backtester:
 
     def fetch_stock_data(self, tickers, start_date, end_date):
         self.stock_predictor.tickers = tickers
-        macro_df = self.stock_predictor.fetch_macro_data(start_date=start_date, end_date=end_date)
+        macro_df = self.stock_predictor.fetch_macro_data(start_date, end_date)
         macro_df.index = pd.to_datetime(macro_df.index).tz_localize(None)
         macro_df.index.name = "timestamp"
 
         stock_data = {}
         for ticker in tickers:
-            request_params = StockBarsRequest(
+            request = StockBarsRequest(
                 symbol_or_symbols=ticker,
                 timeframe=TimeFrame.Hour,
                 start=start_date,
                 end=end_date
             )
             try:
-                bars = self.alpaca_client.get_stock_bars(request_params).df
-
+                bars = self.alpaca_client.get_stock_bars(request).df
                 if bars.empty:
-                    print(f"⚠ No data for {ticker}")
                     continue
 
                 df = bars.reset_index()
-                df = df[df["symbol"] == ticker].drop(columns="symbol").copy()
+                df = df[df["symbol"] == ticker].drop(columns="symbol")
                 df.set_index("timestamp", inplace=True)
                 df.index = df.index.tz_convert(None)
 
+                # Feature engineering
                 df["Moving_Avg"] = df["close"].rolling(window=self.lookback_period).mean()
                 df["Std_Dev"] = df["close"].rolling(window=self.lookback_period).std()
                 df["Upper_Band"] = df["Moving_Avg"] + (self.std_dev_factor * df["Std_Dev"])
                 df["Lower_Band"] = df["Moving_Avg"] - (self.std_dev_factor * df["Std_Dev"])
                 df["ATR"] = df["high"].rolling(window=14).max() - df["low"].rolling(window=14).min()
-                df["MACD"] = df["close"].ewm(span=12, adjust=False).mean() - df["close"].ewm(span=26, adjust=False).mean()
-                df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
+                df["MACD"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
+                df["MACD_Signal"] = df["MACD"].ewm(span=9).mean()
                 df["Bollinger_Width"] = (df["Upper_Band"] - df["Lower_Band"]) / df["Moving_Avg"]
                 df["ROC"] = ((df["close"] - df["close"].shift(10)) / df["close"].shift(10)) * 100
                 df["ADX"] = df["ATR"].rolling(window=14).mean()
@@ -75,62 +84,46 @@ class Backtester:
                 delta = df["close"].diff()
                 gain = delta.where(delta > 0, 0)
                 loss = -delta.where(delta < 0, 0)
-                avg_gain = gain.rolling(window=14, min_periods=1).mean()
-                avg_loss = loss.rolling(window=14, min_periods=1).mean()
+                avg_gain = gain.rolling(window=14).mean()
+                avg_loss = loss.rolling(window=14).mean()
                 rs = avg_gain / avg_loss
                 df["RSI"] = 100 - (100 / (1 + rs))
 
                 df.rename(columns={
-                    "close": "Close",
-                    "high": "High",
-                    "low": "Low",
-                    "open": "Open",
-                    "volume": "Volume"
+                    "close": "Close", "high": "High", "low": "Low",
+                    "open": "Open", "volume": "Volume"
                 }, inplace=True)
 
                 df.replace([np.inf, -np.inf], np.nan, inplace=True)
                 df.dropna(inplace=True)
-
                 df["Ticker"] = ticker
                 df = df.set_index("Ticker", append=True).reorder_levels(["Ticker", "timestamp"])
-                df = df.join(macro_df, how="left")
-                df.dropna(inplace=True)
+                df = df.join(macro_df, how="left").dropna()
 
-                stock_data[ticker] = df#
-                print(f"\n📈 Head von {ticker}:")
-                print(df)
-                df.to_csv("stock_data.csv")
-
-            except Exception as e:
-                print(f"❌ Failed to load data for {ticker}: {e}")
+                stock_data[ticker] = df
+            except Exception:
+                continue
         return stock_data
 
     def run_backtest(self, tickers, start_date, end_date):
         stock_data = self.fetch_stock_data(tickers, start_date, end_date)
-
         if not stock_data:
-            print("⚠ No valid stock data found. Exiting backtest.")
             return
 
         self.balance = 10_000
         initial_balance = self.balance
-        trade_count = 0
         self.trade_log = []
         self.correct_predictions = 0
+        trade_count = 0
         equity_curve = []
-
-        print(f"\n🔍 Running backtest with initial capital: ${initial_balance}")
 
         tickers = list(stock_data.keys())
         max_length = min(len(df) for df in stock_data.values())
-
         if max_length == 0:
-            print("⚠ No valid data for backtest. Exiting.")
             return
 
         open_trades = []
-        i = 0
-        while i < max_length - self.future_prediction_hours:
+        for i in range(max_length - self.future_prediction_hours):
             current_date = None
             available_balance = self.balance * (1 - self.risk_per_trade * len(open_trades))
 
@@ -149,14 +142,12 @@ class Backtester:
                     "CPI", "Zinsen", "Arbeitslosenquote", "VIX", "Oil_Price"
                 ]].values.reshape(1, -1)
 
-                probs = self.model.predict_proba(features)[0]
-                p_down, p_up = probs
+                p_down, p_up = self.model.predict_proba(features)[0]
                 prob = max(p_down, p_up)
 
                 if prob >= self.min_prob_threshold:
                     trade_type = "Long" if p_up >= p_down else "Short"
-                    trade_entry_price = df.iloc[i]["Close"].item()
-
+                    trade_entry_price = df.iloc[i]["Close"]
                     trade_amount = self.balance * self.risk_per_trade
 
                     if available_balance >= trade_amount:
@@ -187,59 +178,47 @@ class Backtester:
 
                 future_prices = df.iloc[entry_day + 1: entry_day + 1 + self.future_prediction_hours]["Close"]
 
+                tp = trade["entry_price"] * (1 + self.take_profit)
+                sl = trade["entry_price"] * (1 - self.stop_loss)
                 exit_price = None
-                trade_outcome = None
-
-                tp_level_long = trade["entry_price"] * (1 + self.take_profit)
-                sl_level_long = trade["entry_price"] * (1 - self.stop_loss)
-                tp_level_short = trade["entry_price"] * (1 - self.take_profit)
-                sl_level_short = trade["entry_price"] * (1 + self.stop_loss)
+                outcome = None
 
                 for price in future_prices:
                     if trade["type"] == "Long":
-                        if price >= tp_level_long:
-                            exit_price = tp_level_long
-                            trade_outcome = "Long Profit"
+                        if price >= tp:
+                            exit_price, outcome = tp, "Long Profit"
                             break
-                        elif price <= sl_level_long:
-                            exit_price = sl_level_long
-                            trade_outcome = "Long Stop Loss"
+                        elif price <= sl:
+                            exit_price, outcome = sl, "Long Stop Loss"
                             break
-                    elif trade["type"] == "Short":
-                        if price <= tp_level_short:
-                            exit_price = tp_level_short
-                            trade_outcome = "Short Profit"
+                    else:  # Short
+                        tp_s = trade["entry_price"] * (1 - self.take_profit)
+                        sl_s = trade["entry_price"] * (1 + self.stop_loss)
+                        if price <= tp_s:
+                            exit_price, outcome = tp_s, "Short Profit"
                             break
-                        elif price >= sl_level_short:
-                            exit_price = sl_level_short
-                            trade_outcome = "Short Stop Loss"
+                        elif price >= sl_s:
+                            exit_price, outcome = sl_s, "Short Stop Loss"
                             break
 
-                # Timeout
                 if exit_price is None and trade_age >= trade["max_duration"]:
-
                     exit_price = df.iloc[entry_day + 1 + self.future_prediction_hours]["Close"]
-                    trade_outcome = f"{trade['type']} Timeout"
-                    self.close_trade(trade, exit_price, df.index[i][1], trade_outcome)
-                    continue
-
-                # Take Profit or Stop Loss
-                if exit_price is not None:
-                    self.close_trade(trade, exit_price, df.index[i][1], trade_outcome)
+                    outcome = f"{trade['type']} Timeout"
+                    self.close_trade(trade, exit_price, df.index[i][1], outcome)
+                elif exit_price:
+                    self.close_trade(trade, exit_price, df.index[i][1], outcome)
                 else:
                     new_open_trades.append(trade)
 
             open_trades = new_open_trades
-
             if current_date:
                 equity_curve.append({"Date": current_date.strftime("%Y-%m-%d %H:%M:%S"), "Equity": self.balance})
-
-            i += 1
 
         final_balance = self.balance
         roi = ((final_balance - initial_balance) / initial_balance) * 100
         prediction_accuracy = (self.correct_predictions / trade_count) * 100 if trade_count > 0 else 0
-
+        pd.DataFrame(self.trade_log).to_csv("data/trade_log.csv", index=False)
+        pd.DataFrame(equity_curve).to_csv("data/equity_curve.csv", index=False)
         print(f"🏁 End capital: ${final_balance:,.2f}")
         print(f"📊 Number of trades: {trade_count}")
         print(f"📈 Total ROI: {roi:.2f}%")
@@ -253,22 +232,19 @@ class Backtester:
         equity_df.to_csv("equity_curve.csv", index=False)
         print("📈 Equity curve saved as 'equity_curve.csv'")
 
-    def close_trade(self, trade, exit_price, current_date, trade_outcome):
-        trade_fee = trade["trade_amount"] * self.trading_fee
-        profit_loss = (exit_price - trade["entry_price"]) / trade["entry_price"]
+    def close_trade(self, trade, exit_price, current_date, outcome):
+        fee = trade["trade_amount"] * self.trading_fee
+        pl = (exit_price - trade["entry_price"]) / trade["entry_price"]
         if trade["type"] == "Short":
-            profit_loss = -profit_loss
+            pl = -pl
 
-
-
-        trade_result = trade["trade_amount"] * profit_loss
-        self.balance += trade_result - trade_fee
+        result = trade["trade_amount"] * pl
+        self.balance += result - fee
         trade["open"] = False
 
-        actual_movement = int(
-            (exit_price > trade["entry_price"]) if trade["type"] == "Long" else (exit_price < trade["entry_price"]))
-        predicted_movement = 1 if trade["type"] == "Long" else 0
-        if actual_movement == predicted_movement:
+        actual = int((exit_price > trade["entry_price"]) if trade["type"] == "Long" else (exit_price < trade["entry_price"]))
+        predicted = 1 if trade["type"] == "Long" else 0
+        if actual == predicted:
             self.correct_predictions += 1
 
         self.trade_log.append({
@@ -276,132 +252,95 @@ class Backtester:
             "Trade End Date": current_date.strftime("%Y-%m-%d %H:%M:%S"),
             "Hour": trade["entry_day"],
             "Stock": trade["ticker"],
-            "Trade Type": trade_outcome,
+            "Trade Type": outcome,
             "Trade Price": trade["entry_price"],
             "Exit Price": exit_price,
-            "Profit/Loss": trade_result,
-            "Fees": trade_fee,
+            "Profit/Loss": result,
+            "Fees": fee,
             "Balance": self.balance,
             "Prediction Prob": trade["prob"]
         })
 
-    def plot_equity_curve(self, start_date, end_date):
-        # 📥 Load trade log
-        equity_df = pd.read_csv("trade_log.csv")
-
-        # ✅ Korrekte Spaltennamen
-        equity_df["Trade End Date"] = pd.to_datetime(equity_df["Trade End Date"])
-        equity_df.sort_values("Trade End Date", inplace=True)
-        equity_df.set_index("Trade End Date", inplace=True)
-
-        equity_df["Equity"] = equity_df["Balance"]
-
-        # ✅ SPY Daten laden
-        request_params = StockBarsRequest(
-            symbol_or_symbols="SPY",
-            timeframe=TimeFrame.Hour,
-            start=start_date,
-            end=end_date
-        )
-
+    def plot_results(self):
         try:
-            bars = self.alpaca_client.get_stock_bars(request_params).df
+            equity_df = pd.read_csv("data/equity_curve.csv")
+            trade_df = pd.read_csv("data/trade_log.csv")
 
-            if isinstance(bars.index, pd.MultiIndex):
-                bars = bars.reset_index(level="symbol", drop=True)
-
-            bars.index = bars.index.tz_convert(None)
-            bars.rename(columns={"close": "Close"}, inplace=True)
-            bars = bars[["Close"]]
-
-            # SPY auf gleiche Zeitstempel wie Equity df bringen
-            bars = bars.loc[bars.index.isin(equity_df.index)]
-
-            # 📊 Relative Performance berechnen
-            bars["SPY Equity"] = bars["Close"] / bars["Close"].iloc[0] * equity_df["Equity"].iloc[0]
-            equity_df["Equity %"] = (equity_df["Equity"] / equity_df["Equity"].iloc[0] - 1) * 100
-            bars["SPY %"] = (bars["SPY Equity"] / bars["SPY Equity"].iloc[0] - 1) * 100
-
-            # 🖼️ Plotten
+            # Equity curve
             plt.figure(figsize=(12, 6))
-            plt.plot(equity_df.index, equity_df["Equity %"], label="XGBoost Portfolio", linewidth=2)
-            plt.plot(bars.index, bars["SPY %"], label="S&P 500", linestyle='--', linewidth=2)
-            plt.title("Portfolio vs. S&P 500 (prozentuale Veränderung)")
-            plt.xlabel("Datum")
-            plt.ylabel("Veränderung [%]")
-            plt.legend()
+            plt.plot(pd.to_datetime(equity_df["Date"]), equity_df["Equity"], label="Equity")
+            plt.xlabel("Date")
+            plt.ylabel("Equity")
+            plt.title("Equity Curve")
             plt.grid(True)
+            plt.legend()
             plt.tight_layout()
+            plt.savefig("plots/equity_curve.png")
             plt.show()
 
-        except Exception as e:
-            print(f"❌ Failed to load SPY data: {e}")
+            # Drawdown
+            equity_df["Peak"] = equity_df["Equity"].cummax()
+            equity_df["Drawdown"] = equity_df["Equity"] / equity_df["Peak"] - 1
+            plt.figure(figsize=(12, 4))
+            plt.fill_between(pd.to_datetime(equity_df["Date"]), equity_df["Drawdown"], color="red")
+            plt.title("Drawdown Curve")
+            plt.ylabel("Drawdown")
+            plt.xlabel("Date")
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig("plots/drawdown.png")
+            plt.show()
 
-    def plot_rolling_roi(self, window=5):
-        trade_df = pd.DataFrame(self.trade_log)
-        rolling_roi = trade_df["Profit/Loss"].rolling(window=window).sum()
+            # Rolling Sharpe Ratio
+            returns = equity_df["Equity"].pct_change().fillna(0)
+            rolling_sharpe = returns.rolling(window=20).mean() / returns.rolling(window=20).std()
+            plt.figure(figsize=(12, 4))
+            plt.plot(pd.to_datetime(equity_df["Date"]), rolling_sharpe, label="Rolling Sharpe Ratio")
+            plt.axhline(0, color='black', linestyle='--', linewidth=1)
+            plt.title("Rolling Sharpe Ratio (20 steps)")
+            plt.xlabel("Date")
+            plt.ylabel("Sharpe Ratio")
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig("plots/rolling_sharpe.png")
+            plt.show()
 
-        plt.figure(figsize=(10, 5))
-        plt.plot(rolling_roi, label=f"Rolling ROI ({window} Trades)")
-        plt.axhline(0, color='red', linestyle='--')
-        plt.title("Rolling ROI")
-        plt.xlabel("Trade #")
-        plt.ylabel(f"Cumulative P/L over {window} trades")
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.show()
+            # Profit/Loss distribution
+            plt.figure(figsize=(10, 5))
+            plt.hist(trade_df["Profit/Loss"], bins=30, color="skyblue", edgecolor="black")
+            plt.title("Distribution of Profit and Loss")
+            plt.xlabel("Profit/Loss")
+            plt.ylabel("Number of Trades")
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig("plots/pl_distribution.png")
+            plt.show()
 
-    def plot_return_distribution(self):
-        trade_df = pd.DataFrame(self.trade_log)
-        plt.figure(figsize=(8, 5))
-        plt.hist(trade_df["Profit/Loss"], bins=20, edgecolor="black")
-        plt.title("Distribution of Trade Returns")
-        plt.xlabel("Profit / Loss")
-        plt.ylabel("Number of Trades")
-        plt.grid(True)
-        plt.tight_layout()
-        plt.show()
+            # Trades over time
+            trade_df["Trade Start Date"] = pd.to_datetime(trade_df["Trade Start Date"])
+            trades_per_day = trade_df.groupby(trade_df["Trade Start Date"].dt.date).size()
+            plt.figure(figsize=(10, 4))
+            trades_per_day.plot(kind="bar")
+            plt.title("Trades per Day")
+            plt.xlabel("Date")
+            plt.ylabel("Number of Trades")
+            plt.tight_layout()
+            plt.xticks(rotation=45)
+            plt.savefig("plots/trades_per_day.png")
+            plt.show()
 
+            # Win rate per ticker
+            trade_df["Win"] = trade_df["Profit/Loss"] > 0
+            win_rate = trade_df.groupby("Stock")["Win"].mean()
+            plt.figure(figsize=(10, 4))
+            win_rate.plot(kind="bar", color="green")
+            plt.title("Win Rate per Ticker")
+            plt.xlabel("Ticker")
+            plt.ylabel("Win Rate")
+            plt.ylim(0, 1)
+            plt.tight_layout()
+            plt.savefig("plots/winrate_per_ticker.png")
+            plt.show()
 
-    def plot_accuracy_per_stock(self):
-        stock_hits = defaultdict(lambda: {"correct": 0, "total": 0})
-
-        for trade in self.trade_log:
-            stock = trade["Stock"]
-            correct = 1 if trade["Profit/Loss"] > 0 else 0
-            stock_hits[stock]["correct"] += correct
-            stock_hits[stock]["total"] += 1
-
-        stock_accuracy = {s: v["correct"] / v["total"] for s, v in stock_hits.items() if v["total"] > 0}
-
-        plt.figure(figsize=(10, 5))
-        plt.bar(stock_accuracy.keys(), stock_accuracy.values())
-        plt.xticks(rotation=90)
-        plt.title("Accuracy by Stock")
-        plt.ylabel("Success Rate")
-        plt.tight_layout()
-        plt.grid(True)
-        plt.show()
-
-
-    def plot_trade_count_per_stock(self):
-        trade_df = pd.DataFrame(self.trade_log)
-
-        if trade_df.empty:
-            print("⚠ Kein Trade-Log vorhanden.")
-            return
-
-        trade_counts = trade_df["Stock"].value_counts()
-
-        plt.figure(figsize=(10, 5))
-        plt.bar(trade_counts.index, trade_counts.values)
-        plt.xticks(rotation=90)
-        plt.title("Anzahl der Trades pro Aktie")
-        plt.xlabel("Aktie")
-        plt.ylabel("Trade-Anzahl")
-        plt.grid(True)
-        plt.tight_layout()
-        plt.show()
-
-
+        except FileNotFoundError:
+            print("CSV-Dateien für Plotting nicht gefunden. Bitte zuerst Backtest ausführen.")

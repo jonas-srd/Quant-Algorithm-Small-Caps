@@ -2,24 +2,14 @@ import time
 import pandas as pd
 import numpy as np
 import alpaca_trade_api as tradeapi
-from datetime import datetime, timedelta
-import matplotlib.pyplot as plt
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
+from datetime import datetime
 import yagmail
 
 
 class PaperTrader:
     def __init__(self, predictor, alpaca_key, alpaca_secret, email_address, email_password, paper_url="https://paper-api.alpaca.markets"):
         self.predictor = predictor
-        self.api = tradeapi.REST(
-            alpaca_key,
-            alpaca_secret,
-            base_url=paper_url
-        )
-        self.alpaca_key = alpaca_key
-        self.alpaca_secret = alpaca_secret
+        self.api = tradeapi.REST(alpaca_key, alpaca_secret, base_url=paper_url)
         self.cash = 10_000.0
         self.risk_per_trade = 0.2
         self.stop_loss = 0.01
@@ -28,16 +18,15 @@ class PaperTrader:
         self.positions = {}
         self.trade_log = []
         self.last_macro_update_day = None
-        self.stock_cache = {}
         self.email_address = email_address
         self.email_password = email_password
-        self.update_macro_if_needed()
         self.selected_tickers = None
+        self.update_macro_if_needed()
 
     def update_macro_if_needed(self):
         today = datetime.today().date()
         if self.last_macro_update_day != today:
-            print("🔄 Überprüfe Makrodaten...")
+            print("🔄 Aktualisiere Makrodaten...")
             self.predictor.auto_update_macro()
             self.last_macro_update_day = today
 
@@ -45,23 +34,16 @@ class PaperTrader:
         try:
             df = self.predictor.fetch_stock_data(ticker)
             if df is not None and not df.empty:
-                print(f"📥 Komplette Daten für {ticker} neu geladen bis {df.index.get_level_values('timestamp').max()}.")
+                print(f"📥 Daten für {ticker} geladen bis {df.index.get_level_values('timestamp').max()}.")
                 return df
             else:
                 print(f"⚠ Keine Daten für {ticker} verfügbar.")
-                return None
         except Exception as e:
             print(f"❌ Fehler beim Laden der Daten für {ticker}: {e}")
-            return None
-
-        df = self.predictor.fetch_stock_data(ticker)
-        if df is not None:
-            self.stock_cache[ticker] = {'data': df, 'timestamp': now}
-            print(f"✅ Initiale Daten für {ticker} geladen bis {df.index.get_level_values('timestamp').max()}.")
-        return df
+        return None
 
     def run_live_loop(self, interval_minutes=60):
-        print(f"🚀 Starte dauerhaften Paper-Trading Loop mit 10.000 $ Kapital")
+        print(f"🚀 Starte Paper-Trading Loop mit 10.000 $ Kapital")
         cycle = 0
         while True:
             print(f"\n🕒 Zyklus {cycle + 1}")
@@ -73,7 +55,7 @@ class PaperTrader:
                     size=min(20, len(self.predictor.tickers)),
                     replace=False
                 )
-                print(f"🎯 Zufällig ausgewählte Aktien für alle Zyklen: {self.selected_tickers}")
+                print(f"🎯 Zufällig ausgewählte Aktien: {self.selected_tickers}")
 
             candidates = []
             for ticker in self.selected_tickers:
@@ -83,8 +65,7 @@ class PaperTrader:
 
                 try:
                     macro_df = pd.read_csv("macro_data_hourly.csv", index_col="timestamp", parse_dates=True)
-                    df = df.join(macro_df, how="left")
-                    df.dropna(inplace=True)
+                    df = df.join(macro_df, how="left").dropna()
                 except Exception as e:
                     print(f"❌ Makrodatenfehler: {e}")
                     continue
@@ -97,10 +78,8 @@ class PaperTrader:
                 if np.any(np.isnan(features)) or np.any(np.isinf(features)):
                     continue
 
-                probs = self.predictor.model.predict_proba(features)[0]
-                p_down, p_up = probs
+                p_down, p_up = self.predictor.model.predict_proba(features)[0]
                 prob = max(p_down, p_up)
-
                 if prob >= self.min_prob_threshold:
                     candidates.append((ticker, prob, p_up, p_down, df))
 
@@ -115,7 +94,7 @@ class PaperTrader:
                     trade_amount = self.cash * self.risk_per_trade
                     qty = int(trade_amount // price)
                     if qty == 0:
-                        print(f"⚠ Nicht genug Kapital für Trade mit {ticker}")
+                        print(f"⚠ Nicht genug Kapital für {ticker}")
                         continue
 
                     self.positions[ticker] = {
@@ -128,23 +107,28 @@ class PaperTrader:
                     }
                     self.cash -= qty * price
                     print(f"✅ {trade_type} eröffnet: {qty} x {ticker} @ {price:.2f} $ | Cash: {self.cash:.2f} $")
+
                 else:
                     current_price = price
-                    outcome = None
-                    if position["type"] == "Long":
+                    exit_trade = False
+                    if trade_type == "Long":
                         if current_price >= position["entry_price"] * (1 + self.take_profit):
                             outcome = "TP"
+                            exit_trade = True
                         elif current_price <= position["entry_price"] * (1 - self.stop_loss):
                             outcome = "SL"
-                    elif position["type"] == "Short":
+                            exit_trade = True
+                    else:
                         if current_price <= position["entry_price"] * (1 - self.take_profit):
                             outcome = "TP"
+                            exit_trade = True
                         elif current_price >= position["entry_price"] * (1 + self.stop_loss):
                             outcome = "SL"
+                            exit_trade = True
 
-                    if outcome:
+                    if exit_trade:
                         pnl = (current_price - position["entry_price"]) * position["qty"]
-                        if position["type"] == "Short":
+                        if trade_type == "Short":
                             pnl = -pnl
                         self.cash += position["qty"] * current_price + pnl
                         print(f"💰 {outcome} – {ticker} geschlossen @ {current_price:.2f} $ | PnL: {pnl:.2f} $ | Cash: {self.cash:.2f} $")
@@ -162,7 +146,7 @@ class PaperTrader:
                         })
                         del self.positions[ticker]
 
-            if datetime.now().hour == 20:  # Beispielzeitpunkt für tägliche Auswertung
+            if datetime.now().hour == 20:
                 self.send_daily_report()
 
             cycle += 1
@@ -172,9 +156,8 @@ class PaperTrader:
         if not self.trade_log:
             print("⚠ Kein Trade-Log zum Speichern vorhanden.")
             return
-        df = pd.DataFrame(self.trade_log)
-        df.to_csv(filename, index=False)
-        print(f"📝 Trade-Log gespeichert als: {filename}")
+        pd.DataFrame(self.trade_log).to_csv(filename, index=False)
+        print(f"📝 Trade-Log gespeichert: {filename}")
 
     def send_daily_report(self):
         if not self.trade_log:
@@ -183,20 +166,20 @@ class PaperTrader:
 
         df = pd.DataFrame(self.trade_log)
         df["Time"] = pd.to_datetime(df["Close Time"])
-        df = df.sort_values("Time")
+        df.sort_values("Time", inplace=True)
         df["Cumulative PnL"] = df["PnL"].cumsum()
 
         last_day = df["Time"].dt.date.max()
-        summary = df[df["Time"].dt.date == last_day].copy()
+        summary = df[df["Time"].dt.date == last_day]
 
-        message = f"Täglicher Report für {last_day}\n"
-        message += f"Abschlüsse: {len(summary)}\n"
-        message += f"Gesamter Tagesgewinn: {summary['PnL'].sum():.2f} $\n"
-        message += f"Kumulierte Gesamtperformance: {df['Cumulative PnL'].iloc[-1]:.2f} $\n"
+        message = f"Daily Report – {last_day}\n"
+        message += f"Trades: {len(summary)}\n"
+        message += f"Tages-PnL: {summary['PnL'].sum():.2f} $\n"
+        message += f"Gesamt-PnL: {df['Cumulative PnL'].iloc[-1]:.2f} $\n"
 
         filename = f"daily_report_{last_day}.csv"
         summary.to_csv(filename, index=False)
 
         yag = yagmail.SMTP(self.email_address, self.email_password)
-        yag.send(to=self.email_address, subject=f"Daily Trading Report {last_day}", contents=message, attachments=filename)
-        print(f"📧 E-Mail Report für {last_day} gesendet an {self.email_address}")
+        yag.send(to=self.email_address, subject=f"Trading Report – {last_day}", contents=message, attachments=filename)
+        print(f"📧 Report gesendet an {self.email_address}")

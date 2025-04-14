@@ -1,22 +1,16 @@
 import numpy as np
-import matplotlib.pyplot as plt
 import pandas as pd
-from collections import defaultdict
+import requests
+import os
+import joblib
+import yfinance as yf
+import xgboost as xgb
+
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
-import xgboost as xgb
-import seaborn as sns
-from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
-from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
-import pdb
-import joblib
-import os
-import requests
-import yfinance as yf
-from sklearn.preprocessing import MinMaxScaler
-from datetime import datetime
-
 
 
 class StockPredictor:
@@ -25,28 +19,22 @@ class StockPredictor:
         self.lookback_period = lookback_period
         self.std_dev_factor = std_dev_factor
         self.future_prediction_days = future_prediction_days
-        self.data = {}
-        self.model = None
-        self.fred_api_key = "d0176aa190f9a4db6dbf2ba6de6efc82"
         self.start_date = start_date
         self.end_date = end_date
+        self.data = {}
+        self.model = None
+        self.fred_api_key = os.getenv("FRED_API_KEY", "")
         self.alpaca_client = StockHistoricalDataClient(
-            api_key="PKHZI2GPSTTI8XH7FVA8",
-            secret_key="fZhOrdjXLDhhggvMaBCBcAQ5wVvJ5OopIIZkZKve"
+            api_key=os.getenv("ALPACA_API_KEY"),
+            secret_key=os.getenv("ALPACA_SECRET_KEY")
         )
 
     def fetch_macro_data(self, start_date=None, end_date=None):
-
         start_date = start_date or self.start_date
         end_date = end_date or self.end_date
-        fred_series = {
-            "CPI": "CPIAUCSL",
-            "Zinsen": "FEDFUNDS",
-            "Arbeitslosenquote": "UNRATE"
-        }
+        fred_series = {"CPI": "CPIAUCSL", "Zinsen": "FEDFUNDS", "Arbeitslosenquote": "UNRATE"}
         macro_data = {}
 
-        # 1. FRED-Daten abrufen
         for key, series_id in fred_series.items():
             url = f"https://api.stlouisfed.org/fred/series/observations"
             params = {
@@ -66,71 +54,41 @@ class StockPredictor:
                 df["date"] = pd.to_datetime(df["date"])
                 df["value"] = pd.to_numeric(df["value"], errors="coerce")
                 macro_data[key] = df.set_index("date")["value"]
-            else:
-                print(f"⚠ Fehler beim Abrufen von {key}: {response.status_code}")
-                macro_data[key] = None
 
-        # 2. VIX von Yahoo Finance
         try:
             vix = yf.download("^VIX", start=start_date, end=end_date, interval="1d")["Close"]
             vix.name = "VIX"
             macro_data["VIX"] = vix
-        except Exception as e:
-            print(f"⚠ Fehler beim Abrufen des VIX: {e}")
+        except Exception:
+            pass
 
-        # 3. WTI Rohölpreis von Yahoo Finance
         try:
             oil = yf.download("CL=F", start=start_date, end=end_date, interval="1d")["Close"]
             oil.name = "Oil_Price"
             macro_data["Oil_Price"] = oil
-        except Exception as e:
-            print(f"⚠ Fehler beim Abrufen des Ölpreises: {e}")
+        except Exception:
+            pass
+
         macro_df = pd.concat(macro_data.values(), axis=1)
         macro_df.columns = macro_data.keys()
-        macro_df = macro_df.ffill()
+        macro_df.ffill(inplace=True)
         macro_df.index = pd.to_datetime(macro_df.index)
-        macro_df = macro_df[~macro_df.index.duplicated(keep='first')]  # Optional: Duplikate entfernen
+        macro_df = macro_df[~macro_df.index.duplicated(keep='first')]
         macro_df = macro_df.resample("h").ffill()
-
         macro_df.index.name = "timestamp"
-        macro_df.to_csv("macro_data_hourly.csv")
+        macro_df.to_csv("data/macro_data_hourly.csv")
         return macro_df
-
-    def auto_update_macro(self, days_buffer=2):
-        """
-        Aktualisiert die Makrodaten, falls neuere Daten als in der gespeicherten CSV vorhanden sein könnten.
-        """
-        today = datetime.today().date()
-        file_path = "macro_data_hourly.csv"
-
-        if os.path.exists(file_path):
-            try:
-                macro_df = pd.read_csv(file_path, index_col="timestamp", parse_dates=True)
-                last_date = macro_df.index[-1].date()
-                if (today - last_date).days >= days_buffer:
-                    print(f"🔄 Aktualisiere Makrodaten: letzte bekannte Zeile vom {last_date}")
-                    self.fetch_macro_data(start_date=macro_df.index[0].strftime("%Y-%m-%d"),
-                                          end_date=today.strftime("%Y-%m-%d"))
-                else:
-                    print(f"✅ Makrodaten aktuell (bis {last_date}) – kein Update nötig.")
-            except Exception as e:
-                print(f"⚠ Fehler beim Lesen von Makro-CSV: {e} – lade neu.")
-                self.fetch_macro_data(start_date="2018-01-01", end_date=today.strftime("%Y-%m-%d"))
-        else:
-            print("📂 Makro-CSV nicht gefunden – lade vollständige Daten.")
-            self.fetch_macro_data(start_date="2018-01-01", end_date=today.strftime("%Y-%m-%d"))
 
     def fetch_stock_data(self, ticker):
         try:
-            request_params = StockBarsRequest(
+            request = StockBarsRequest(
                 symbol_or_symbols=ticker,
                 timeframe=TimeFrame.Hour,
                 start=self.start_date,
                 end=self.end_date
             )
-            bars = self.alpaca_client.get_stock_bars(request_params).df
+            bars = self.alpaca_client.get_stock_bars(request).df
             if bars.empty:
-                print(f"⚠ Skipping {ticker}: No data available.")
                 return None
 
             df = bars.reset_index()
@@ -143,8 +101,8 @@ class StockPredictor:
             df["Upper_Band"] = df["Moving_Avg"] + (self.std_dev_factor * df["Std_Dev"])
             df["Lower_Band"] = df["Moving_Avg"] - (self.std_dev_factor * df["Std_Dev"])
             df["ATR"] = df["high"].rolling(window=14).max() - df["low"].rolling(window=14).min()
-            df["MACD"] = df["close"].ewm(span=12, adjust=False).mean() - df["close"].ewm(span=26, adjust=False).mean()
-            df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
+            df["MACD"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
+            df["MACD_Signal"] = df["MACD"].ewm(span=9).mean()
             df["Bollinger_Width"] = (df["Upper_Band"] - df["Lower_Band"]) / df["Moving_Avg"]
             df["ROC"] = ((df["close"] - df["close"].shift(10)) / df["close"].shift(10)) * 100
             df["ADX"] = df["ATR"].rolling(window=14).mean()
@@ -152,45 +110,29 @@ class StockPredictor:
             delta = df["close"].diff()
             gain = delta.where(delta > 0, 0)
             loss = -delta.where(delta < 0, 0)
-            avg_gain = gain.rolling(window=14, min_periods=1).mean()
-            avg_loss = loss.rolling(window=14, min_periods=1).mean()
+            avg_gain = gain.rolling(window=14).mean()
+            avg_loss = loss.rolling(window=14).mean()
             rs = avg_gain / avg_loss
             df["RSI"] = 100 - (100 / (1 + rs))
 
             df.rename(columns={
-                "close": "Close",
-                "high": "High",
-                "low": "Low",
-                "open": "Open",
-                "volume": "Volume"
+                "close": "Close", "high": "High", "low": "Low",
+                "open": "Open", "volume": "Volume"
             }, inplace=True)
 
             df.replace([np.inf, -np.inf], np.nan, inplace=True)
             df.dropna(inplace=True)
-
             df["Ticker"] = ticker
             df = df.set_index("Ticker", append=True).reorder_levels(["Ticker", "timestamp"])
             return df
+
         except Exception as e:
-            print(f"❌ Error fetching data for {ticker}: {e}")
+            print(f"Error fetching {ticker}: {e}")
             return None
 
     def prepare_data(self):
-        min_dates = []
-        for ticker in self.tickers:
-            df = self.fetch_stock_data(ticker)
-            if df is not None:
-                min_dates.append(df.index.get_level_values("timestamp").min())
-        if min_dates:
-            min_start_date = min(min_dates).strftime("%Y-%m-%d")
-        else:
-            min_start_date = self.start_date
-
-        print(f"📅 Makro-Startdatum (dynamisch bestimmt): {min_start_date}")
-        macro_df = self.fetch_macro_data(start_date=min_start_date, end_date=self.end_date)
-
-        self.data = {}
-        X, y = [], []
+        X, y, self.data = [], [], {}
+        macro_df = self.fetch_macro_data(start_date=self.start_date, end_date=self.end_date)
 
         for ticker in self.tickers:
             df = self.fetch_stock_data(ticker)
@@ -199,98 +141,59 @@ class StockPredictor:
                 df.dropna(inplace=True)
                 self.data[ticker] = df
 
-        for ticker, df in self.data.items():
-            for i in range(self.lookback_period, len(df) - self.future_prediction_days):
-                features = df.iloc[i][[
-                    "Close", "Moving_Avg", "Upper_Band", "Lower_Band",
-                    "MACD", "MACD_Signal", "RSI", "ATR",
-                    "Bollinger_Width", "ROC", "ADX",
-                    "CPI", "Zinsen", "Arbeitslosenquote",
-                    "VIX", "Oil_Price"
-                ]].values
+                for i in range(self.lookback_period, len(df) - self.future_prediction_days):
+                    features = df.iloc[i][[
+                        "Close", "Moving_Avg", "Upper_Band", "Lower_Band",
+                        "MACD", "MACD_Signal", "RSI", "ATR",
+                        "Bollinger_Width", "ROC", "ADX",
+                        "CPI", "Zinsen", "Arbeitslosenquote", "VIX", "Oil_Price"
+                    ]].values
 
-                if np.any(np.isnan(features)) or np.any(np.isinf(features)):
-                    continue
-
-                X.append(features)
-                y.append(
-                    1 if df["Close"].iloc[i + self.future_prediction_days].item() >
-                         df["Close"].iloc[i].item()
-                    else 0
-                )
+                    if not np.any(np.isnan(features)) and not np.any(np.isinf(features)):
+                        X.append(features)
+                        y.append(int(df["Close"].iloc[i + self.future_prediction_days] > df["Close"].iloc[i]))
 
         return np.array(X), np.array(y)
-
 
     def train_model(self):
         X, y = self.prepare_data()
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        self.X_test = X_test
-        self.y_test = y_test
-        param_grid = {
-            "n_estimators": [1000],
-            "max_depth": [9],
-            "learning_rate": [0.1],
-            "subsample": [1.0],
-            "colsample_bytree": [0.75],
-            "gamma": [0],
-            "min_child_weight": [1],
-            "reg_lambda": [1],
-            "reg_alpha": [0]
-        }
+        self.X_test, self.y_test = X_test, y_test
+        grid = GridSearchCV(xgb.XGBClassifier(), {
+            "n_estimators": [100], "max_depth": [6], "learning_rate": [0.1]
+        }, cv=5, scoring="accuracy")
 
-        grid_search = GridSearchCV(xgb.XGBClassifier(random_state=42), param_grid, cv=5, scoring="accuracy", n_jobs=-1, verbose=2)
-        print("🔍 Starte Grid Search...")
-        grid_search.fit(X_train, y_train)
-        self.model = grid_search.best_estimator_
-        print(f"🎯 Beste Hyperparameter: {grid_search.best_params_}")
+        grid.fit(X_train, y_train)
+        self.model = grid.best_estimator_
+        print(f"Best Params: {grid.best_params_}")
+        print(f"Train Accuracy: {grid.best_score_:.2f}")
 
-        cv_scores = cross_val_score(self.model, X_train, y_train, cv=5, scoring="accuracy")
-        print(f"✅ Cross-Validation Scores: {cv_scores}")
-        print(f"✅ Durchschnittliche Cross-Validation-Genauigkeit: {np.mean(cv_scores) * 100:.2f}%")
+        joblib.dump((self.model, self.data, self.X_test, self.y_test), "data/trained_model.pkl")
 
-        joblib.dump((self.model, self.data, self.X_test, self.y_test), "trained_model.pkl")
-        print("✅ Modell gespeichert als 'trained_model.pkl'")
+    def load_model(self, force_train=False):
+        if force_train or not os.path.exists("data/trained_model.pkl"):
+            self.train_model()
+        else:
+            self.model, self.data, self.X_test, self.y_test = joblib.load("data/trained_model.pkl")
 
     def evaluate_model(self):
         y_pred = self.model.predict(self.X_test)
-        print(f"✅ Test-Accuracy: {accuracy_score(self.y_test, y_pred) * 100:.2f}%")
-        print(f"F1 Score: {f1_score(self.y_test, y_pred):.4f}")
-        print("Classification Report:")
+        print("Accuracy:", accuracy_score(self.y_test, y_pred))
+        print("F1 Score:", f1_score(self.y_test, y_pred))
+        print(confusion_matrix(self.y_test, y_pred))
         print(classification_report(self.y_test, y_pred))
-
-        cm = confusion_matrix(self.y_test, y_pred)
-        plt.figure(figsize=(6,5))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=["Down", "Up"], yticklabels=["Down", "Up"])
-        plt.xlabel("Predicted")
-        plt.ylabel("Actual")
-        plt.title("Confusion Matrix")
-        plt.show()
-
-        feature_importance = self.model.feature_importances_
-        plt.figure(figsize=(10,6))
-        plt.barh(["Close", "Moving_Avg", "Upper_Band", "Lower_Band", "MACD", "MACD_Signal", "RSI", "ATR",
-                  "Bollinger_Width", "ROC", "ADX", "CPI", "Zinsen", "Arbeitslosenquote", "VIX", "Oil_Price"], feature_importance)
-        plt.xlabel("Feature Importance")
-        plt.ylabel("Features")
-        plt.title("Feature Importance Plot")
-        plt.show()
-
-    def load_model(self, force_train=False):
-        if force_train or not os.path.exists("trained_model.pkl"):
-            print("Train new Model...")
-            self.train_model()
-        else:
-            print("Load saved Model...")
-            self.model, self.data, self.X_test, self.y_test = joblib.load("trained_model.pkl")
-            print("Model and Data are loaded!")
-
-    def predict(self, X):
-        if self.model is None:
-            raise ValueError("⚠ The model has not been trained or loaded yet!")
-        return self.model.predict(X)
 
     def run(self, force_train=False):
         self.load_model(force_train=force_train)
         self.evaluate_model()
+
+    def predict(self, X):
+        if self.model is None:
+            raise ValueError("Model not trained")
+        return self.model.predict(X)
+
+    def predict_proba(self, X):
+        if self.model is None:
+            raise ValueError("Model not trained")
+        return self.model.predict_proba(X)
