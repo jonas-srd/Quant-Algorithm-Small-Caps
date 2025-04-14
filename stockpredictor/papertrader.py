@@ -18,6 +18,8 @@ class PaperTrader:
             alpaca_secret,
             base_url=paper_url
         )
+        self.alpaca_key = alpaca_key
+        self.alpaca_secret = alpaca_secret
         self.cash = 10_000.0
         self.risk_per_trade = 0.2
         self.stop_loss = 0.01
@@ -30,6 +32,7 @@ class PaperTrader:
         self.email_address = email_address
         self.email_password = email_password
         self.update_macro_if_needed()
+        self.selected_tickers = None
 
     def update_macro_if_needed(self):
         today = datetime.today().date()
@@ -39,47 +42,17 @@ class PaperTrader:
             self.last_macro_update_day = today
 
     def fetch_stock_data_cached(self, ticker):
-        now = datetime.now()
-        cached = self.stock_cache.get(ticker, {})
-
-        if cached:
-            df = cached['data']
-            last_time = df.index.get_level_values("timestamp").max()
-            start = last_time + timedelta(hours=1)
-
-            try:
-                client = StockHistoricalDataClient(
-                    api_key=self.api._key_id,
-                    secret_key=self.api._secret_key
-                )
-                request = StockBarsRequest(
-                    symbol_or_symbols=ticker,
-                    timeframe=TimeFrame.Hour,
-                    start=start,
-                    end=now
-                )
-                new_data = client.get_stock_bars(request).df
-                if not new_data.empty:
-                    new_data = new_data.reset_index()
-                    new_data = new_data[new_data["symbol"] == ticker].drop(columns="symbol")
-                    new_data.set_index("timestamp", inplace=True)
-                    new_data.index = new_data.index.tz_convert(None)
-
-                    new_data["Ticker"] = ticker
-                    new_data = new_data.set_index("Ticker", append=True).reorder_levels(["Ticker", "timestamp"])
-
-                    df = pd.concat([df, new_data])
-                    df = df[~df.index.duplicated(keep="last")]
-                    df.sort_index(inplace=True)
-                    self.stock_cache[ticker]['data'] = df
-                    self.stock_cache[ticker]['timestamp'] = now
-                    print(f"📥 Neue Daten für {ticker} bis {df.index.get_level_values('timestamp').max()} geladen.")
-                else:
-                    print(f"ℹ️ Keine neuen Daten für {ticker} seit {last_time}.")
-            except Exception as e:
-                print(f"⚠ Fehler beim Anhängen neuer Daten für {ticker}: {e}")
-
-            return df
+        try:
+            df = self.predictor.fetch_stock_data(ticker)
+            if df is not None and not df.empty:
+                print(f"📥 Komplette Daten für {ticker} neu geladen bis {df.index.get_level_values('timestamp').max()}.")
+                return df
+            else:
+                print(f"⚠ Keine Daten für {ticker} verfügbar.")
+                return None
+        except Exception as e:
+            print(f"❌ Fehler beim Laden der Daten für {ticker}: {e}")
+            return None
 
         df = self.predictor.fetch_stock_data(ticker)
         if df is not None:
@@ -94,14 +67,16 @@ class PaperTrader:
             print(f"\n🕒 Zyklus {cycle + 1}")
             self.update_macro_if_needed()
 
-            selected_tickers = np.random.choice(
-                self.predictor.tickers,
-                size=min(20, len(self.predictor.tickers)),
-                replace=False
-            )
+            if self.selected_tickers is None:
+                self.selected_tickers = np.random.choice(
+                    self.predictor.tickers,
+                    size=min(20, len(self.predictor.tickers)),
+                    replace=False
+                )
+                print(f"🎯 Zufällig ausgewählte Aktien für alle Zyklen: {self.selected_tickers}")
 
             candidates = []
-            for ticker in selected_tickers:
+            for ticker in self.selected_tickers:
                 df = self.fetch_stock_data_cached(ticker)
                 if df is None or df.empty:
                     continue

@@ -34,7 +34,7 @@ small_caps = [
 ]
 
 start_date = "2016-01-09"
-end_date = datetime.now() - timedelta(hours=3)
+end_date = datetime.now() - timedelta(hours=6)
 
 predictor = StockPredictor(tickers=small_caps, start_date=start_date, end_date=end_date)
 predictor.run(force_train=False)
@@ -53,7 +53,7 @@ if mode == "backtest":
     backtester.plot_trade_count_per_stock()
 
 elif mode == "paper":
-    alpaca_key = "PKHZI2GPSTTI8XH7FVA8",
+    alpaca_key = "PKHZI2GPSTTI8XH7FVA8"
     alpaca_secret = "fZhOrdjXLDhhggvMaBCBcAQ5wVvJ5OopIIZkZKve"
     trader = PaperTrader(predictor, alpaca_key, alpaca_secret,
                          email_address="jonas.schroeder@hotmail.de",
